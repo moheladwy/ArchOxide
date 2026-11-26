@@ -9,7 +9,7 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 ## Package sources and settings
 
 - **Installed packages.** Filter the inventory by name, version, or availability. The Foreign label means a package is absent from the configured repository databases.
-- **Search and package changes.** Search by name or description, install a result from its displayed source, remove an installed package, and update all packages, only selected packages, or all except selected packages. Package-manager prompts remain interactive, including build review when `yay` offers it. Repository features also work without `yay`.
+- **Search and package changes.** Search by name or description, install a result from its displayed source, remove selected packages, and update all packages, only selected packages, or all except selected packages. Package-manager prompts remain interactive, including build review when `yay` offers it. Repository features also work without `yay`.
 - **Flatpak and AppImages.** Manage apps using configured Flatpak installations or import AppImages from local files and direct HTTPS downloads.
 - **Settings.** Preview 18 themes, including all 15 DWM Titus palettes. Choose an installed font family, set its size, adjust row density and details width, and toggle AUR, Flatpak, or AppImages support.
 
@@ -22,7 +22,7 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 | `gg` / `G`, `Ctrl+Home` / `Ctrl+End` | Jump to the first or last row. |
 | `h` / `l`, `Ctrl+h` / `Ctrl+l` | Focus the list or details pane when both are visible. |
 | `/`, `a`, `R` | Filter an installed list or edit the search query. In Installed, `a` cycles availability. `R` reloads inventories and Flatpak search results. |
-| `i`, `d` | Install the selected result or remove the highlighted installed package. |
+| `i`, `d` | Install the selected result or remove the selected items in an installed list. |
 | `Space u`, `u`, `U` | Update all apps in the current source, update selected apps, or update all except selected apps. Use `u` and `U` in an installed list. |
 | `x`, `X` | Toggle the highlighted app’s mark or clear all marks in the current installed list. |
 | `Space e`, `Space f f`, `Space f t` | Open Installed, focus Search, or select Theme in Settings. |
@@ -34,7 +34,7 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 
 ## Package transactions
 
-In installed lists, `u` and `U` use the marked items, or the highlighted row when there are no marks. Marks survive filtering. Press `Enter` to confirm a transaction or `Esc` to cancel.
+Mark items with `x` in Installed, Flatpak, or AppImages, then press `d` to remove those items. With no marks, `d` targets the highlighted row. Marks survive filtering, and the confirmation lists the targets. The `u` and `U` update shortcuts use the same selection rules. Press `Enter` to confirm a transaction or `Esc` to cancel.
 
 Confirmed installs, removals, and updates open a terminal popup with live output. Answer package-manager prompts directly in the popup. AppImage operations report their progress in the same view. Use `Ctrl+C` to interrupt an interactive command and `Shift+PgUp` or `Shift+PgDn` to scroll while it runs. Once the operation finishes, use `PgUp` and `PgDn` to review output or `Enter` and `Esc` to close the popup.
 
@@ -42,8 +42,8 @@ For Arch packages, a selected upgrade uses the cached repository databases. Upda
 
 ## Flatpak and AppImages
 
-- In **Flatpak**, press `/` to filter installed apps or `f` to search configured remotes. Press `i` on a result to install it in the displayed scope, or `Esc` to return to installed apps. Press `d` to remove the highlighted installed app. Transactions use Flatpak’s own prompts and run against the selected installation. [Flatpak command reference](https://docs.flatpak.org/en/latest/flatpak-command-reference.html)
-- In **AppImages**, press `i` and enter a local file path or direct HTTPS download URL. ArchOxide stores managed copies under `$XDG_DATA_HOME/archoxide/appimages` (default `~/.local/share/archoxide/appimages`). Press `/` to filter managed files, `u` to refresh from the saved source, `e` to replace one from a new source, or `d` to remove its managed copy. If a download link changes for each release, use `e` with the new link. [AppImage distribution guide](https://docs.appimage.org/packaging-guide/distribution.html)
+- In **Flatpak**, press `/` to filter installed apps or `f` to search configured remotes. Press `i` on a result to install it in the displayed scope, or `Esc` to return to installed apps. Removals target each app’s full reference within its installation. [Flatpak command reference](https://docs.flatpak.org/en/latest/flatpak-command-reference.html#flatpak-uninstall)
+- In **AppImages**, press `i` and enter a local file path or direct HTTPS download URL. ArchOxide stores managed copies under `$XDG_DATA_HOME/archoxide/appimages` (default `~/.local/share/archoxide/appimages`). Press `/` to filter managed files, `u` to refresh from the saved source, `e` to replace one from a new source, or `d` to remove selected managed copies. If a download link changes for each release, use `e` with the new link. [AppImage distribution guide](https://docs.appimage.org/packaging-guide/distribution.html)
 
 ## Configuration
 

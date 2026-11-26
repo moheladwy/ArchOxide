@@ -557,7 +557,16 @@ impl App {
             Action::Remove
                 if self.view == View::Installed && self.installed_state == ReadState::Ready =>
             {
-                self.confirmation = self.selected_installed().cloned().map(Transaction::Remove);
+                let names: Vec<_> = self
+                    .installed_targets()
+                    .into_iter()
+                    .map(|package| package.name.clone())
+                    .collect();
+                if names.is_empty() {
+                    self.notice = Some("Select at least one installed package.".into());
+                } else {
+                    self.confirmation = Some(Transaction::Remove(names));
+                }
             }
             Action::Upgrade if !matches!(self.view, View::Flatpak | View::AppImages) => {
                 self.confirmation = Some(Transaction::Upgrade {
@@ -611,19 +620,23 @@ impl App {
         }
     }
 
-    fn confirm_scoped_upgrade(&mut self, exclude: bool) {
-        if self.installed_state != ReadState::Ready {
-            self.notice = Some("Refresh Installed before choosing packages to update.".into());
-            return;
-        }
-        let selected: Vec<_> = if self.marked.is_empty() {
+    fn installed_targets(&self) -> Vec<&InstalledPackage> {
+        if self.marked.is_empty() {
             self.selected_installed().into_iter().collect()
         } else {
             self.installed
                 .iter()
                 .filter(|package| self.is_marked(&package.name))
                 .collect()
-        };
+        }
+    }
+
+    fn confirm_scoped_upgrade(&mut self, exclude: bool) {
+        if self.installed_state != ReadState::Ready {
+            self.notice = Some("Refresh Installed before choosing packages to update.".into());
+            return;
+        }
+        let selected = self.installed_targets();
         if selected.is_empty() {
             self.notice = Some("Select at least one installed package.".into());
             return;

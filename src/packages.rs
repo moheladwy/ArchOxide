@@ -139,7 +139,7 @@ fn executable(path: &Path) -> bool {
 #[derive(Clone, Debug)]
 pub enum Transaction {
     Install(SearchResult),
-    Remove(InstalledPackage),
+    Remove(Vec<String>),
     Upgrade { aur: bool },
     UpgradeSelected { aur: bool, names: Vec<String> },
     UpgradeExcept { aur: bool, names: Vec<String> },
@@ -151,6 +151,12 @@ impl Transaction {
     pub fn commands(&self) -> Result<Vec<Command>, String> {
         match self {
             Self::Flatpak(operation) => operation.commands(),
+            Self::Remove(names) => {
+                let command = self.native_command()?;
+                // Pacman can interpret a missing package name as a group.
+                require_installed_targets(names, &installed_names()?)?;
+                Ok(vec![command])
+            }
             _ => self.native_command().map(|command| vec![command]),
         }
     }
@@ -177,17 +183,14 @@ impl Transaction {
                 command.args(["-S", "--needed", "--"]);
                 command.arg(format!("{repository}/{}", package.name));
             }
-            Self::Remove(package) => {
-                validate_package(&package.name)?;
+            Self::Remove(names) => {
+                require_selection(names)?;
                 command = Command::new("sudo");
-                command.args(["pacman", "-R", "--", &package.name]);
+                command.args(["pacman", "-R", "--"]).args(names);
             }
             Self::Upgrade { aur } => return upgrade_command(*aur, true, std::iter::empty()),
             Self::UpgradeSelected { aur, names } => {
-                let output = read("pacman", &["-Qq"])?;
-                let rows = pacman_stdout(&output, "pacman -Qq", true)?;
-                let installed = parse_package_names(rows, "pacman -Qq")?;
-                return selected_upgrade_command(*aur, names, &installed);
+                return selected_upgrade_command(*aur, names, &installed_names()?);
             }
             Self::UpgradeExcept { aur, names } => {
                 require_selection(names)?;
@@ -208,17 +211,28 @@ fn require_selection(names: &[String]) -> Result<(), String> {
     names.iter().try_for_each(|name| validate_package(name))
 }
 
+fn installed_names() -> Result<HashSet<String>, String> {
+    let output = read("pacman", &["-Qq"])?;
+    let rows = pacman_stdout(&output, "pacman -Qq", true)?;
+    parse_package_names(rows, "pacman -Qq")
+}
+
+fn require_installed_targets(names: &[String], installed: &HashSet<String>) -> Result<(), String> {
+    if let Some(missing) = names.iter().find(|name| !installed.contains(*name)) {
+        return Err(format!(
+            "{missing} is no longer installed. Refresh Installed and try again."
+        ));
+    }
+    Ok(())
+}
+
 fn selected_upgrade_command(
     aur: bool,
     names: &[String],
     installed: &HashSet<String>,
 ) -> Result<Command, String> {
     require_selection(names)?;
-    if let Some(missing) = names.iter().find(|name| !installed.contains(*name)) {
-        return Err(format!(
-            "{missing} is no longer installed. Refresh Installed and try again."
-        ));
-    }
+    require_installed_targets(names, installed)?;
     let selected: HashSet<_> = names.iter().map(String::as_str).collect();
     let mut ignored: Vec<_> = installed
         .iter()

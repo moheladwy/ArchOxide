@@ -86,6 +86,34 @@ fn selective_updates_group_by_scope_and_deduplicate_refs() {
 }
 
 #[test]
+fn selected_removal_uses_only_full_refs_in_their_selected_installations() {
+    let apps = parse_installed(concat!(
+        "org.mozilla.firefox/x86_64/stable\tsystem\tflathub\t161.0\tFirefox\n",
+        "org.mozilla.firefox/x86_64/stable\tuser\tflathub\t161.0\tFirefox\n",
+        "org.mozilla.firefox/x86_64/beta\tsystem (work)\tflathub-beta\t162.0\tFirefox\n",
+        "com.obsproject.Studio/x86_64/stable\tuser\tflathub\t32.0\tOBS Studio\n",
+    ))
+    .unwrap();
+    let commands = Operation::Remove(apps[1..].to_vec()).commands().unwrap();
+    assert_eq!(commands.len(), 2);
+    assert_eq!(
+        arguments(&commands[0]),
+        ["uninstall", "--user", "--no-related", "--", OBS, FIREFOX]
+    );
+    assert_eq!(
+        arguments(&commands[1]),
+        [
+            "uninstall",
+            "--installation=work",
+            "--no-related",
+            "--",
+            FIREFOX_BETA
+        ]
+    );
+    assert!(Operation::Remove(Vec::new()).commands().is_err());
+}
+
+#[test]
 fn exclusions_match_exact_installation_and_full_ref() {
     let apps = parse_installed(concat!(
         "org.mozilla.firefox/x86_64/stable\tsystem\tflathub\t161.0\tFirefox\n",

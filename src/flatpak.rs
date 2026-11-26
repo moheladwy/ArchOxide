@@ -339,7 +339,7 @@ fn read(command: &mut Command) -> Result<String, String> {
 #[derive(Clone, Debug)]
 pub enum Operation {
     Install(SearchApp),
-    Remove(InstalledApp),
+    Remove(Vec<InstalledApp>),
     UpdateAll,
     Update(Vec<InstalledApp>),
     UpdateExcept(Vec<InstalledApp>),
@@ -355,11 +355,9 @@ impl Operation {
                 command.args(["--", &app.remote, &app.reference]);
                 Ok(vec![command])
             }
-            Self::Remove(app) => {
-                app_identity(&app.reference)?;
-                let mut command = app.installation.command("uninstall");
-                command.args(["--", &app.reference]);
-                Ok(vec![command])
+            Self::Remove(apps) => {
+                require_selection(apps)?;
+                installed_app_commands("uninstall", &["--no-related"], apps.iter())
             }
             Self::UpdateAll => {
                 let mut command = Command::new("flatpak");
@@ -368,7 +366,7 @@ impl Operation {
             }
             Self::Update(apps) => {
                 require_selection(apps)?;
-                update_commands(apps.iter())
+                installed_app_commands("update", &[], apps.iter())
             }
             Self::UpdateExcept(excluded) => {
                 require_selection(excluded)?;
@@ -394,14 +392,18 @@ fn update_except_commands(
         .iter()
         .map(|app| (&app.installation, app.reference.as_str()))
         .collect();
-    update_commands(
+    installed_app_commands(
+        "update",
+        &[],
         installed
             .iter()
             .filter(|app| !excluded.contains(&(&app.installation, app.reference.as_str()))),
     )
 }
 
-fn update_commands<'a>(
+fn installed_app_commands<'a>(
+    action: &str,
+    options: &[&str],
     apps: impl Iterator<Item = &'a InstalledApp>,
 ) -> Result<Vec<Command>, String> {
     let mut grouped_refs: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
@@ -415,8 +417,8 @@ fn update_commands<'a>(
     Ok(grouped_refs
         .into_iter()
         .map(|(installation, refs)| {
-            let mut command = installation.command("update");
-            command.arg("--").args(refs);
+            let mut command = installation.command(action);
+            command.args(options).arg("--").args(refs);
             command
         })
         .collect())

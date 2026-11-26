@@ -232,7 +232,7 @@ fn package_actions_require_confirmation_and_keep_the_selected_target() {
     press(&mut app, "d", now);
     app.handle_key(KeyEvent::from(KeyCode::Enter), now);
     assert!(
-        matches!(app.take_transaction(), Some(Transaction::Remove(package)) if package.name == "ripgrep")
+        matches!(app.take_transaction(), Some(Transaction::Remove(names)) if names == ["ripgrep"])
     );
 
     app.yay_available = false;
@@ -242,6 +242,36 @@ fn package_actions_require_confirmation_and_keep_the_selected_target() {
         app.take_transaction(),
         Some(Transaction::Upgrade { aur: false })
     ));
+}
+
+#[test]
+fn removal_targets_marked_packages_even_when_a_filter_hides_them() {
+    let mut app = App::default();
+    app.apply_read(Response::Inventory(
+        0,
+        Ok(Inventory {
+            packages: vec![
+                installed_package("alpha", "1", Availability::Repository),
+                installed_package("beta", "1", Availability::Foreign),
+                installed_package("gamma", "1", Availability::Repository),
+            ],
+            warning: None,
+        }),
+    ));
+    let now = Instant::now();
+    press(&mut app, "xjx/gamma", now);
+    app.handle_key(KeyEvent::from(KeyCode::Enter), now);
+    assert_eq!(app.selected_installed().unwrap().name, "gamma");
+
+    press(&mut app, "d", now);
+    assert!(
+        matches!(&app.confirmation, Some(Transaction::Remove(names)) if names == &["alpha", "beta"])
+    );
+    assert!(app.take_transaction().is_none());
+    app.handle_key(KeyEvent::from(KeyCode::Enter), now);
+    assert!(
+        matches!(app.take_transaction(), Some(Transaction::Remove(names)) if names == ["alpha", "beta"])
+    );
 }
 
 #[test]

@@ -134,13 +134,7 @@ impl App {
                 }
             }
             Action::ClearMarks if !browsing => self.sources.flatpaks.marks.clear(),
-            Action::Remove if !browsing && self.sources.flatpaks.state == ReadState::Ready => {
-                self.confirmation = self
-                    .selected_flatpak()
-                    .cloned()
-                    .map(|app| Transaction::Flatpak(flatpak::Operation::Remove(app)));
-            }
-            Action::UpgradeSelected | Action::UpgradeExcept
+            Action::Remove | Action::UpgradeSelected | Action::UpgradeExcept
                 if !browsing && self.sources.flatpaks.state == ReadState::Ready =>
             {
                 let selected = self
@@ -153,10 +147,10 @@ impl App {
                 if selected.is_empty() {
                     self.notice = Some("Select at least one installed Flatpak.".into());
                 } else {
-                    let operation = if action == Action::UpgradeExcept {
-                        flatpak::Operation::UpdateExcept(selected)
-                    } else {
-                        flatpak::Operation::Update(selected)
+                    let operation = match action {
+                        Action::Remove => flatpak::Operation::Remove(selected),
+                        Action::UpgradeExcept => flatpak::Operation::UpdateExcept(selected),
+                        _ => flatpak::Operation::Update(selected),
                     };
                     self.confirmation = Some(Transaction::Flatpak(operation));
                 }
@@ -193,10 +187,19 @@ impl App {
                 self.focus = Pane::List;
             }
             Action::Remove if self.sources.images.state == ReadState::Ready => {
-                self.confirmation = self
-                    .selected_image()
+                let entries: Vec<_> = self
+                    .sources
+                    .images
+                    .selected(self.selected_image(), |entry| entry.path.clone())
+                    .into_iter()
                     .cloned()
-                    .map(|entry| Transaction::AppImage(appimage::Operation::Remove(entry)));
+                    .collect();
+                if entries.is_empty() {
+                    self.notice = Some("Select at least one managed AppImage.".into());
+                } else {
+                    self.confirmation =
+                        Some(Transaction::AppImage(appimage::Operation::Remove(entries)));
+                }
             }
             Action::Upgrade | Action::UpgradeSelected | Action::UpgradeExcept
                 if self.sources.images.state == ReadState::Ready =>

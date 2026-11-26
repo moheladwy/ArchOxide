@@ -205,13 +205,9 @@ fn builds_interactive_transactions_with_exact_arguments() {
             &["-S", "--needed", "--", "aur/demo-name+@_2"],
         ),
         (
-            Transaction::Remove(InstalledPackage {
-                name: "demo-name+@_2".into(),
-                version: "3.0-1".into(),
-                availability: Availability::Foreign,
-            }),
+            Transaction::Remove(vec!["demo-name+@_2".into(), "other".into()]),
             "sudo",
-            &["pacman", "-R", "--", "demo-name+@_2"],
+            &["pacman", "-R", "--", "demo-name+@_2", "other"],
         ),
         (Transaction::Upgrade { aur: true }, "yay", &["-Syu"]),
         (
@@ -231,13 +227,13 @@ fn builds_interactive_transactions_with_exact_arguments() {
 
 #[test]
 fn rejects_invalid_transaction_targets() {
+    assert!(Transaction::Remove(Vec::new()).native_command().is_err());
     for name in ["", "-Syu", ".hidden", "core/demo", "demo\tname", "demo\n"] {
-        let package = InstalledPackage {
-            name: name.into(),
-            version: "1.0-1".into(),
-            availability: Availability::Unknown,
-        };
-        assert!(Transaction::Remove(package).native_command().is_err());
+        assert!(
+            Transaction::Remove(vec!["valid".into(), name.into()])
+                .native_command()
+                .is_err()
+        );
     }
     for repository in ["", "..", "extra/demo", "extra\x1b"] {
         let package = SearchResult {

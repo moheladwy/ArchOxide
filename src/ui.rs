@@ -28,7 +28,8 @@ const HELP: &[&str] = &[
     "/                 Filter or search",
     "a                 Filter by availability",
     "R                 Refresh Installed",
-    "i / d             Install / remove selection",
+    "i                 Install the highlighted result",
+    "d                 Remove marked apps or the highlighted row",
     "Space u           Update all packages",
     "u / U             Update selected / all except selected",
     "x / X             Toggle package mark / clear marks",
@@ -764,11 +765,11 @@ fn draw_confirmation(
             format!("Source {}", package.source),
             Vec::new(),
         ),
-        Transaction::Remove(package) => (
-            "Remove package",
-            format!("{} {}", package.name, package.version),
-            format!("Installed package · {}", package.availability.label()),
-            Vec::new(),
+        Transaction::Remove(names) => (
+            "Remove selected packages",
+            format!("{} selected", names.len()),
+            "Installed Arch packages".into(),
+            names.clone(),
         ),
         Transaction::Upgrade { aur } => (
             "Full system upgrade",
@@ -851,14 +852,7 @@ fn flatpak_confirmation(
                 Vec::new(),
             );
         }
-        flatpak::Operation::Remove(app) => {
-            return (
-                "Remove Flatpak",
-                app.reference.clone(),
-                app.installation.to_string(),
-                Vec::new(),
-            );
-        }
+        flatpak::Operation::Remove(apps) => ("Remove selected Flatpaks", "selected", apps),
         flatpak::Operation::UpdateAll => {
             return (
                 "Update all Flatpaks",
@@ -894,11 +888,11 @@ fn image_confirmation(
             source.clone(),
             Vec::new(),
         ),
-        appimage::Operation::Remove(entry) => (
-            "Remove managed AppImage",
-            entry.name.clone(),
-            entry.path.display().to_string(),
-            Vec::new(),
+        appimage::Operation::Remove(entries) => (
+            "Remove selected AppImages",
+            format!("{} selected", entries.len()),
+            "Managed AppImage copies".into(),
+            entries.iter().map(|entry| entry.name.clone()).collect(),
         ),
         appimage::Operation::Replace(entry, source) => (
             "Replace AppImage",

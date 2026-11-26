@@ -31,7 +31,7 @@ pub struct Entry {
 #[derive(Clone, Debug)]
 pub enum Operation {
     Import(String),
-    Remove(Entry),
+    Remove(Vec<Entry>),
     Update(Vec<Entry>),
     Replace(Entry, String),
 }
@@ -54,10 +54,7 @@ impl Operation {
                 store.install(&name, source, None, &mut progress)?;
                 Ok(format!("Imported {name}"))
             }
-            Self::Remove(entry) => {
-                store.remove(entry, &mut progress)?;
-                Ok(format!("Removed {}", entry.name))
-            }
+            Self::Remove(entries) => store.remove_selected(entries, &mut progress),
             Self::Update(entries) => store.update(entries, &mut progress),
             Self::Replace(entry, input) => {
                 progress(&format!("Replacing {}", entry.name));
@@ -211,6 +208,34 @@ impl Store {
         rename_directory(&directory, &retired, libc::RENAME_NOREPLACE)
             .map_err(|error| file_error("remove AppImage", &directory, error))?;
         delete_retired(staging, &retired, &entry.name)
+    }
+
+    fn remove_selected(
+        &self,
+        entries: &[Entry],
+        progress: &mut impl FnMut(&str),
+    ) -> Result<String, String> {
+        if entries.is_empty() {
+            return Err("Select at least one managed AppImage".into());
+        }
+        let mut failures = Vec::new();
+        for entry in entries {
+            match self.remove(entry, progress) {
+                Ok(()) => progress(&format!("Removed {}", entry.name)),
+                Err(error) => {
+                    progress(&format!("Could not remove {}", entry.name));
+                    failures.push(format!("{}: {error}", entry.name));
+                }
+            }
+        }
+
+        let removed = entries.len() - failures.len();
+        let summary = format!("Removed {removed} of {} selected AppImages", entries.len());
+        if failures.is_empty() {
+            Ok(summary)
+        } else {
+            Err(format!("{summary}. {}", failures.join(". ")))
+        }
     }
 
     fn update(&self, entries: &[Entry], progress: &mut impl FnMut(&str)) -> Result<String, String> {

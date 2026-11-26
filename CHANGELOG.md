@@ -8,6 +8,7 @@
 - Added live installed-package filtering and background searches across configured repositories and the AUR.
 - Added confirmed installs, removals, and full upgrades with interactive `pacman` and `yay` prompts.
 - Added updates for selected packages and full upgrades with temporary exclusions, with package marks in Installed.
+- Added removal of marked Arch packages, Flatpaks, and managed AppImages with a confirmation that lists the selected targets.
 - Added editable TOML settings for themes, layout, and AUR support, plus a dedicated Kitty launch for font settings.
 - Added searchable system font and theme pickers, including all 15 DWM Titus palettes and live theme previews.
 - Added Flatpak install, search, update, and removal through configured installations.

@@ -106,6 +106,32 @@ fn imports_and_removes_only_the_managed_copy() {
 }
 
 #[test]
+fn removes_selected_managed_copies_and_reports_partial_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path());
+    for name in ["Alpha", "Beta", "Gamma"] {
+        let path = directory.path().join(format!("{name}.AppImage"));
+        fixture(&path, 4);
+        import(&store, &path).unwrap();
+    }
+
+    let entries = store.installed().unwrap();
+    let extra = entries[0].path.parent().unwrap().join("keep.txt");
+    fs::write(&extra, "keep").unwrap();
+    let result = store.remove_selected(&entries[..2], &mut |_| {});
+    let message = result.unwrap_err();
+    assert!(message.contains("Removed 1 of 2 selected AppImages"));
+    assert!(message.contains("Alpha"));
+    assert!(extra.exists());
+    assert!(!entries[1].path.exists());
+    assert_eq!(
+        store.installed().unwrap(),
+        [entries[0].clone(), entries[2].clone()]
+    );
+    assert!(directory.path().join("Beta.AppImage").exists());
+}
+
+#[test]
 fn a_failed_replacement_keeps_the_binary_and_origin() {
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path());
