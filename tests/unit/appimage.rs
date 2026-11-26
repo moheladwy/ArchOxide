@@ -194,3 +194,44 @@ fn preserves_unmanaged_entries_and_refuses_to_follow_storage_links() {
     assert!(store.remove(&entry, &mut |_| {}).is_err());
     assert_eq!(fs::read_to_string(extra).unwrap(), "keep me");
 }
+
+#[test]
+fn search_preserves_managed_matches_after_original_source_is_deleted() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path());
+    let original = directory.path().join("Demo.AppImage");
+    let content = fixture(&original, 4);
+    import(&store, &original).unwrap();
+
+    let entries = store.installed().unwrap();
+    let query = original.to_str().unwrap();
+    let before = search_entries(query, &entries).unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(
+        before[0].source,
+        PackageSource::ManagedAppImage(entries[0].path.clone())
+    );
+
+    fs::remove_file(&original).unwrap();
+    assert_eq!(search_entries(query, &entries).unwrap(), before);
+    assert_eq!(fs::read(&entries[0].path).unwrap(), content);
+    assert!(search_entries(query, &[]).is_err());
+}
+
+#[test]
+fn search_offers_only_valid_new_import_candidates() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("New.AppImage");
+    fixture(&path, 5);
+    let query = path.to_str().unwrap();
+    let results = search_entries(query, &[]).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].source,
+        PackageSource::AppImageImport(query.into())
+    );
+    fs::remove_file(&path).unwrap();
+    assert!(search_entries(query, &[]).is_err());
+    fs::create_dir(&path).unwrap();
+    assert!(search_entries(query, &[]).is_err());
+}

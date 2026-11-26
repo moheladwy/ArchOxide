@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     env, fmt, io,
     os::unix::fs::PermissionsExt,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output, Stdio},
 };
 
@@ -36,13 +36,38 @@ pub struct InstalledPackage {
 pub enum Source {
     Repository(String),
     Aur,
+    Flatpak {
+        installation: flatpak::Installation,
+        remote: String,
+        reference: String,
+    },
+    AppImageImport(String),
+    ManagedAppImage(PathBuf),
+}
+
+impl Source {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Repository(_) => "Pacman",
+            Self::Aur => "AUR",
+            Self::Flatpak { .. } => "Flatpak",
+            Self::AppImageImport(_) | Self::ManagedAppImage(_) => "AppImage",
+        }
+    }
 }
 
 impl fmt::Display for Source {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Repository(name) => formatter.write_str(name),
+            Self::Repository(name) => write!(formatter, "Pacman · {name}"),
             Self::Aur => formatter.write_str("AUR"),
+            Self::Flatpak {
+                installation,
+                remote,
+                ..
+            } => write!(formatter, "Flatpak · {remote} · {installation}"),
+            Self::AppImageImport(_) => formatter.write_str("AppImage · Import"),
+            Self::ManagedAppImage(_) => formatter.write_str("AppImage · Installed"),
         }
     }
 }
@@ -55,10 +80,62 @@ pub struct SearchResult {
     pub description: String,
 }
 
+impl From<flatpak::SearchApp> for SearchResult {
+    fn from(app: flatpak::SearchApp) -> Self {
+        Self {
+            name: if app.name.is_empty() {
+                app.id
+            } else {
+                app.name
+            },
+            version: app.version,
+            source: Source::Flatpak {
+                installation: app.installation,
+                remote: app.remote,
+                reference: app.reference,
+            },
+            description: app.description,
+        }
+    }
+}
+
+impl SearchResult {
+    pub fn install_transaction(&self) -> Result<Transaction, String> {
+        match &self.source {
+            Source::Repository(_) | Source::Aur => Ok(Transaction::Install(self.clone())),
+            Source::Flatpak {
+                installation,
+                remote,
+                reference,
+            } => {
+                let (id, branch) = flatpak::app_identity(reference)?;
+                Ok(Transaction::Flatpak(flatpak::Operation::Install(
+                    flatpak::SearchApp {
+                        id: id.into(),
+                        name: self.name.clone(),
+                        version: self.version.clone(),
+                        branch: branch.into(),
+                        reference: reference.clone(),
+                        description: self.description.clone(),
+                        remote: remote.clone(),
+                        installation: installation.clone(),
+                    },
+                )))
+            }
+            Source::AppImageImport(input) => Ok(Transaction::AppImage(
+                appimage::Operation::Import(input.clone()),
+            )),
+            Source::ManagedAppImage(_) => Err("This AppImage is already installed.".into()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchSource {
     Repository,
     Aur,
+    Flatpak,
+    AppImage,
 }
 
 #[derive(Debug)]
@@ -102,6 +179,10 @@ pub fn search(source: SearchSource, query: &str) -> Result<Vec<SearchResult>, St
     }
 
     let output = match source {
+        SearchSource::Flatpak => {
+            return flatpak::search(query).map(|apps| apps.into_iter().map(Into::into).collect());
+        }
+        SearchSource::AppImage => return appimage::search(query),
         SearchSource::Repository => {
             let pattern = literal_pattern(query);
             read("pacman", &["-Ss", "--color", "never", "--", &pattern])?
@@ -122,6 +203,9 @@ pub fn search(source: SearchSource, query: &str) -> Result<Vec<SearchResult>, St
     let rows = match source {
         SearchSource::Repository => pacman_stdout(&output, "pacman -Ss", true)?,
         SearchSource::Aur => yay_search_stdout(&output)?,
+        SearchSource::Flatpak | SearchSource::AppImage => {
+            return Err("Expected native package search output".into());
+        }
     };
     parse_search(rows, source)
 }
@@ -173,6 +257,7 @@ impl Transaction {
                         command = Command::new("yay");
                         "aur"
                     }
+                    _ => return Err("Expected a native package source".into()),
                 };
                 command.args(["-S", "--needed", "--"]);
                 command.arg(format!("{repository}/{}", package.name));
@@ -369,6 +454,9 @@ fn parse_search(bytes: &[u8], source: SearchSource) -> Result<Vec<SearchResult>,
     let unexpected = || match source {
         SearchSource::Repository => "Unexpected search output from pacman -Ss".to_owned(),
         SearchSource::Aur => "Unexpected search output from yay -Ssa".to_owned(),
+        SearchSource::Flatpak | SearchSource::AppImage => {
+            "Expected native package search output".to_owned()
+        }
     };
 
     while let Some(header) = lines.next() {

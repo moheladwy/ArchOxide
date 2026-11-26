@@ -8,17 +8,24 @@ use crate::{
     packages::{self, Inventory, SearchResult, SearchSource},
 };
 
-const FONT_SLOT: usize = 3;
-const FLATPAK_INVENTORY_SLOT: usize = 4;
-const FLATPAK_SEARCH_SLOT: usize = 5;
-const IMAGE_INVENTORY_SLOT: usize = 6;
+const FONT_SLOT: usize = 5;
+const FLATPAK_INVENTORY_SLOT: usize = 6;
+const FLATPAK_SEARCH_SLOT: usize = 7;
+const IMAGE_INVENTORY_SLOT: usize = 8;
 
-pub const SEARCH_SOURCES: [SearchSource; 2] = [SearchSource::Repository, SearchSource::Aur];
+pub const SEARCH_SOURCES: [SearchSource; 4] = [
+    SearchSource::Repository,
+    SearchSource::Aur,
+    SearchSource::Flatpak,
+    SearchSource::AppImage,
+];
 
 pub fn search_index(source: SearchSource) -> usize {
     match source {
         SearchSource::Repository => 0,
         SearchSource::Aur => 1,
+        SearchSource::Flatpak => 2,
+        SearchSource::AppImage => 3,
     }
 }
 

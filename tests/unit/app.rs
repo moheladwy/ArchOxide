@@ -186,7 +186,12 @@ fn search_keeps_repository_results_when_aur_fails_and_discards_stale_response() 
 #[test]
 fn search_preserves_the_selected_source_when_repository_rows_arrive_later() {
     let mut app = App {
-        search_states: [ReadState::Loading, ReadState::Loading],
+        search_states: [
+            ReadState::Loading,
+            ReadState::Loading,
+            ReadState::Idle,
+            ReadState::Idle,
+        ],
         ..App::default()
     };
     let repo = search_result("same-name", Source::Repository("extra".into()));
@@ -399,4 +404,74 @@ fn disabled_sources_are_persisted_and_skipped_by_navigation() {
 
     press(&mut app, "rs", now);
     assert_eq!(app.views().collect::<Vec<_>>(), View::ALL);
+}
+
+#[test]
+fn unified_search_preserves_sources_and_dispatches_installs() {
+    let mut app = App {
+        view: View::Search,
+        search_id: 3,
+        ..App::default()
+    };
+    let repo = search_result("demo", Source::Repository("extra".into()));
+    let aur = search_result("demo", Source::Aur);
+    let flatpak = search_result(
+        "demo",
+        Source::Flatpak {
+            installation: crate::flatpak::Installation::User,
+            remote: "flathub".into(),
+            reference: "app/org.example.Demo/x86_64/stable".into(),
+        },
+    );
+    let image = search_result(
+        "demo",
+        Source::AppImageImport("https://example.org/demo.AppImage".into()),
+    );
+    assert!(app.apply_read(Response::Search(
+        SearchSource::Flatpak,
+        3,
+        Ok(vec![flatpak.clone()])
+    )));
+    assert_eq!(app.selected_result(), Some(&flatpak));
+    assert!(!app.apply_read(Response::Search(
+        SearchSource::AppImage,
+        2,
+        Ok(vec![image.clone()])
+    )));
+    assert!(app.apply_read(Response::Search(
+        SearchSource::AppImage,
+        3,
+        Ok(vec![image.clone()])
+    )));
+    assert!(app.apply_read(Response::Search(
+        SearchSource::Repository,
+        3,
+        Ok(vec![repo.clone()])
+    )));
+    assert!(app.apply_read(Response::Search(
+        SearchSource::Aur,
+        3,
+        Ok(vec![aur.clone()])
+    )));
+    assert_eq!(
+        app.search_rows().collect::<Vec<_>>(),
+        [&repo, &aur, &flatpak, &image]
+    );
+    assert_eq!(app.selected_result(), Some(&flatpak));
+    let now = Instant::now();
+    press(&mut app, "i", now);
+    assert!(matches!(
+        &app.confirmation,
+        Some(Transaction::Flatpak(crate::flatpak::Operation::Install(result)))
+            if result.remote == "flathub"
+                && result.reference == "app/org.example.Demo/x86_64/stable"
+                && result.installation == crate::flatpak::Installation::User
+    ));
+    app.handle_key(KeyEvent::from(KeyCode::Esc), now);
+    press(&mut app, "ji", now);
+    assert!(matches!(
+        &app.confirmation,
+        Some(Transaction::AppImage(crate::appimage::Operation::Import(url)))
+            if url == "https://example.org/demo.AppImage"
+    ));
 }

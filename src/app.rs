@@ -185,8 +185,8 @@ pub struct App {
     filter: String,
     pub query: String,
     pub yay_available: bool,
-    search_results: [Vec<SearchResult>; 2],
-    pub search_states: [ReadState; 2],
+    search_results: [Vec<SearchResult>; SEARCH_SOURCES.len()],
+    pub search_states: [ReadState; SEARCH_SOURCES.len()],
     search_selection: Option<(Source, String)>,
     draft: Option<Draft>,
     details_visible: bool,
@@ -232,17 +232,10 @@ impl App {
     pub fn transaction_finished(&mut self, message: String, transaction: &Transaction) {
         self.notice = Some(message);
         match transaction {
-            Transaction::Flatpak(_) => {
-                self.refresh_flatpak_inventory();
-                return;
-            }
-            Transaction::AppImage(_) => {
-                self.refresh_image_inventory();
-                return;
-            }
-            _ => {}
+            Transaction::Flatpak(_) => self.refresh_flatpak_inventory(),
+            Transaction::AppImage(_) => self.refresh_image_inventory(),
+            _ => self.refresh_inventory(),
         }
-        self.refresh_inventory();
         if self.view == View::Search {
             self.refresh_search();
         } else if !self.query.is_empty() {
@@ -552,7 +545,12 @@ impl App {
             Action::CycleAvailability if self.view == View::Installed => self.cycle_availability(),
             Action::RefreshInventory if self.view == View::Installed => self.refresh_inventory(),
             Action::Install if self.view == View::Search => {
-                self.confirmation = self.selected_result().cloned().map(Transaction::Install);
+                if let Some(result) = self.selected_result() {
+                    match result.install_transaction() {
+                        Ok(transaction) => self.confirmation = Some(transaction),
+                        Err(error) => self.notice = Some(error),
+                    }
+                }
             }
             Action::Remove
                 if self.view == View::Installed && self.installed_state == ReadState::Ready =>
@@ -802,7 +800,13 @@ impl App {
             return;
         }
         for source in SEARCH_SOURCES {
-            if source == SearchSource::Aur && !self.aur_enabled() {
+            let enabled = match source {
+                SearchSource::Repository => true,
+                SearchSource::Aur => self.aur_enabled(),
+                SearchSource::Flatpak => self.config.packages.flatpak_enabled,
+                SearchSource::AppImage => self.config.packages.appimage_enabled,
+            };
+            if !enabled {
                 continue;
             }
             self.search_states[search_index(source)] = ReadState::Loading;
@@ -969,6 +973,9 @@ impl App {
         }
 
         let refresh_aur = self.config.packages.aur_enabled != self.settings.packages.aur_enabled;
+        let refresh_search = refresh_aur
+            || self.config.packages.flatpak_enabled != self.settings.packages.flatpak_enabled
+            || self.config.packages.appimage_enabled != self.settings.packages.appimage_enabled;
         let disable_flatpak =
             self.config.packages.flatpak_enabled && !self.settings.packages.flatpak_enabled;
         let disable_images =
@@ -996,6 +1003,8 @@ impl App {
         );
         if refresh_aur {
             self.yay_available = packages::yay_available();
+        }
+        if refresh_search {
             self.refresh_search();
         }
     }

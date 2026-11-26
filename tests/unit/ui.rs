@@ -100,3 +100,58 @@ fn saved_theme_and_layout_control_the_rendered_view() {
         1
     );
 }
+
+#[test]
+fn search_rows_keep_names_left_and_sources_at_the_right_edge() {
+    let palette = Palette::new(Theme::Light);
+    let cases = [
+        ("firefox", Source::Repository("extra".into()), "Pacman"),
+        ("firefox-bin", Source::Aur, "AUR"),
+        (
+            "Firefox",
+            Source::Flatpak {
+                installation: flatpak::Installation::User,
+                remote: "flathub".into(),
+                reference: "app/org.mozilla.firefox/x86_64/stable".into(),
+            },
+            "Flatpak",
+        ),
+        (
+            "A very long AppImage package name",
+            Source::AppImageImport("https://example.org/demo.AppImage".into()),
+            "AppImage",
+        ),
+    ];
+    for comfortable in [false, true] {
+        for width in [20_u16, 50] {
+            for (name, source, label) in &cases {
+                let package = SearchResult {
+                    name: (*name).into(),
+                    version: "1.0".into(),
+                    source: source.clone(),
+                    description: String::new(),
+                };
+                let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        frame.render_widget(
+                            List::new([search_row(&package, width, comfortable, palette)]),
+                            frame.area(),
+                        );
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let first: String = buffer.content[..usize::from(width)]
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(first.starts_with(name.split_whitespace().next().unwrap()));
+                assert!(first.ends_with(*label));
+                assert_eq!(
+                    search_row(&package, width, comfortable, palette).height(),
+                    if comfortable { 2 } else { 1 }
+                );
+            }
+        }
+    }
+}
