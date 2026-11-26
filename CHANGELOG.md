@@ -13,3 +13,4 @@
 - Added Flatpak install, search, update, and removal through configured installations.
 - Added managed AppImage imports from local files or HTTPS, with updates from saved sources, replacement, and removal.
 - Added persistent switches for Flatpak and AppImages support.
+- Added an interactive terminal popup for package operations and live AppImage progress.

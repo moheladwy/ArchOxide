@@ -12,7 +12,6 @@ const FONT_SLOT: usize = 3;
 const FLATPAK_INVENTORY_SLOT: usize = 4;
 const FLATPAK_SEARCH_SLOT: usize = 5;
 const IMAGE_INVENTORY_SLOT: usize = 6;
-const IMAGE_OPERATION_SLOT: usize = 7;
 
 pub const SEARCH_SOURCES: [SearchSource; 2] = [SearchSource::Repository, SearchSource::Aur];
 
@@ -31,7 +30,6 @@ pub enum Request {
     FlatpakInventory(u64),
     FlatpakSearch(u64, String),
     ImageInventory(u64),
-    ImageOperation(appimage::Operation),
 }
 
 impl Request {
@@ -43,7 +41,6 @@ impl Request {
             Self::FlatpakInventory(_) => FLATPAK_INVENTORY_SLOT,
             Self::FlatpakSearch(..) => FLATPAK_SEARCH_SLOT,
             Self::ImageInventory(_) => IMAGE_INVENTORY_SLOT,
-            Self::ImageOperation(_) => IMAGE_OPERATION_SLOT,
         }
     }
 
@@ -57,7 +54,6 @@ impl Request {
             Self::FlatpakInventory(id) => Response::FlatpakInventory(id, flatpak::installed()),
             Self::FlatpakSearch(id, query) => Response::FlatpakSearch(id, flatpak::search(&query)),
             Self::ImageInventory(id) => Response::ImageInventory(id, appimage::installed()),
-            Self::ImageOperation(operation) => Response::ImageOperation(operation.run()),
         }
     }
 
@@ -69,7 +65,6 @@ impl Request {
             Self::FlatpakInventory(id) => Response::FlatpakInventory(id, Err(error)),
             Self::FlatpakSearch(id, _) => Response::FlatpakSearch(id, Err(error)),
             Self::ImageInventory(id) => Response::ImageInventory(id, Err(error)),
-            Self::ImageOperation(_) => Response::ImageOperation(Err(error)),
         }
     }
 }
@@ -82,7 +77,6 @@ pub enum Response {
     FlatpakInventory(u64, Result<Vec<flatpak::InstalledApp>, String>),
     FlatpakSearch(u64, Result<Vec<flatpak::SearchApp>, String>),
     ImageInventory(u64, Result<Vec<appimage::Entry>, String>),
-    ImageOperation(Result<String, String>),
 }
 
 impl Response {
@@ -94,7 +88,6 @@ impl Response {
             Self::FlatpakInventory(..) => FLATPAK_INVENTORY_SLOT,
             Self::FlatpakSearch(..) => FLATPAK_SEARCH_SLOT,
             Self::ImageInventory(..) => IMAGE_INVENTORY_SLOT,
-            Self::ImageOperation(..) => IMAGE_OPERATION_SLOT,
         }
     }
 }
@@ -107,7 +100,7 @@ struct Slot {
 
 #[derive(Debug)]
 pub struct Reads {
-    slots: [Slot; IMAGE_OPERATION_SLOT + 1],
+    slots: [Slot; IMAGE_INVENTORY_SLOT + 1],
     sender: Sender<Response>,
     receiver: Receiver<Response>,
 }

@@ -9,6 +9,8 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -42,22 +44,24 @@ pub fn installed() -> Result<Vec<Entry>, String> {
 }
 
 impl Operation {
-    pub fn run(&self) -> Result<String, String> {
+    pub fn run(&self, mut progress: impl FnMut(&str)) -> Result<String, String> {
+        progress("Opening AppImage storage");
         let store = Store::open(true)?.ok_or("AppImage storage is unavailable")?;
         match self {
             Self::Import(input) => {
                 let source = Source::parse(input)?;
                 let name = source.name()?;
-                store.install(&name, source, None)?;
+                store.install(&name, source, None, &mut progress)?;
                 Ok(format!("Imported {name}"))
             }
             Self::Remove(entry) => {
-                store.remove(entry)?;
+                store.remove(entry, &mut progress)?;
                 Ok(format!("Removed {}", entry.name))
             }
-            Self::Update(entries) => store.update(entries),
+            Self::Update(entries) => store.update(entries, &mut progress),
             Self::Replace(entry, input) => {
-                store.replace(entry, Source::parse(input)?)?;
+                progress(&format!("Replacing {}", entry.name));
+                store.replace(entry, Source::parse(input)?, &mut progress)?;
                 Ok(format!("Replaced {}", entry.name))
             }
         }
@@ -189,12 +193,18 @@ impl Store {
         Ok(directory)
     }
 
-    fn replace(&self, entry: &Entry, source: Source) -> Result<(), String> {
+    fn replace(
+        &self,
+        entry: &Entry,
+        source: Source,
+        progress: &mut impl FnMut(&str),
+    ) -> Result<(), String> {
         self.current_directory(entry)?;
-        self.install(&entry.name, source, Some(entry))
+        self.install(&entry.name, source, Some(entry), progress)
     }
 
-    fn remove(&self, entry: &Entry) -> Result<(), String> {
+    fn remove(&self, entry: &Entry, progress: &mut impl FnMut(&str)) -> Result<(), String> {
+        progress(&format!("Removing {}", entry.name));
         let directory = self.current_directory(entry)?;
         let staging = self.staging()?;
         let retired = staging.path().join("removed");
@@ -203,22 +213,34 @@ impl Store {
         delete_retired(staging, &retired, &entry.name)
     }
 
-    fn update(&self, entries: &[Entry]) -> Result<String, String> {
+    fn update(&self, entries: &[Entry], progress: &mut impl FnMut(&str)) -> Result<String, String> {
         if entries.is_empty() {
             return Err("No AppImages to refresh".to_owned());
         }
         let mut refreshed = 0;
         let mut failures = Vec::new();
-        for entry in entries {
+        for (index, entry) in entries.iter().enumerate() {
+            progress(&format!(
+                "Refreshing {} ({}/{})",
+                entry.name,
+                index + 1,
+                entries.len()
+            ));
             let result = entry
                 .origin
                 .as_deref()
                 .ok_or_else(|| "Set an update source using Replace".to_owned())
                 .and_then(Source::parse)
-                .and_then(|source| self.replace(entry, source));
+                .and_then(|source| self.replace(entry, source, progress));
             match result {
-                Ok(()) => refreshed += 1,
-                Err(error) => failures.push(format!("{}: {error}", entry.name)),
+                Ok(()) => {
+                    refreshed += 1;
+                    progress(&format!("Refreshed {}", entry.name));
+                }
+                Err(error) => {
+                    progress(&format!("Could not refresh {}", entry.name));
+                    failures.push(format!("{}: {error}", entry.name));
+                }
             }
         }
         let summary = format!("Refreshed {refreshed} of {} AppImages", entries.len());
@@ -229,7 +251,13 @@ impl Store {
         }
     }
 
-    fn install(&self, name: &str, source: Source, previous: Option<&Entry>) -> Result<(), String> {
+    fn install(
+        &self,
+        name: &str,
+        source: Source,
+        previous: Option<&Entry>,
+        progress: &mut impl FnMut(&str),
+    ) -> Result<(), String> {
         let destination = self.root.join(name);
         if previous.is_none() && metadata(&destination)?.is_some() {
             return Err(format!("An AppImage entry named {name} already exists"));
@@ -248,8 +276,10 @@ impl Store {
             .mode(0o600)
             .open(&image_path)
             .map_err(|error| file_error("stage AppImage", &image_path, error))?;
-        source.transfer(&self.root, &mut image)?;
+        source.transfer(&self.root, &mut image, name, progress)?;
+        progress(&format!("Verifying the AppImage header for {name}"));
         validate_header(&image)?;
+        progress(&format!("Installing {name}"));
         image
             .set_permissions(fs::Permissions::from_mode(0o700))
             .and_then(|()| image.sync_all())
@@ -375,9 +405,16 @@ impl Source {
         Ok(name.to_owned())
     }
 
-    fn transfer(&self, root: &Path, destination: &mut File) -> Result<(), String> {
+    fn transfer(
+        &self,
+        root: &Path,
+        destination: &mut File,
+        name: &str,
+        progress: &mut impl FnMut(&str),
+    ) -> Result<(), String> {
         match self {
             Self::Local(path) => {
+                progress(&format!("Copying {name} from a local file"));
                 if path.starts_with(root) {
                     return Err("Choose a source outside managed AppImage storage".to_owned());
                 }
@@ -405,20 +442,25 @@ impl Source {
                 }
                 Ok(())
             }
-            Self::Https(url) => download(url, destination),
+            Self::Https(url) => download(url, destination, name, progress),
         }
     }
 }
 
-fn download(url: &str, destination: &File) -> Result<(), String> {
+fn download(
+    url: &str,
+    destination: &File,
+    name: &str,
+    progress: &mut impl FnMut(&str),
+) -> Result<(), String> {
+    progress(&format!("Downloading {name}"));
     let output = destination
         .try_clone()
         .map_err(|error| format!("Could not open staged AppImage download ({error})"))?;
-    let output = Command::new("curl")
+    let mut curl = Command::new("curl")
         .args([
             "--disable",
             "--silent",
-            "--show-error",
             "--fail",
             "--location",
             "--globoff",
@@ -438,26 +480,47 @@ fn download(url: &str, destination: &File) -> Result<(), String> {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::from(output))
-        .output()
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => {
                 "Install curl to download AppImages from HTTPS URLs".to_owned()
             }
             _ => format!("Could not start AppImage download ({error})"),
         })?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail: String = detail
-            .trim()
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(250)
-            .collect();
-        return Err(
-            format!("AppImage download failed ({}) {detail}", output.status)
-                .trim_end()
-                .to_owned(),
-        );
+    let mut downloaded = 0;
+    let status = loop {
+        let status = match curl.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = curl.kill();
+                let _ = curl.wait();
+                return Err(format!("Could not monitor AppImage download ({error})"));
+            }
+        };
+        if let Ok(metadata) = destination.metadata()
+            && metadata.len() > downloaded
+        {
+            downloaded = metadata.len();
+            progress(&format!("Downloading {name} ({downloaded} bytes received)"));
+        }
+        if let Some(status) = status {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+    if !status.success() {
+        // Curl's diagnostics can echo source or redirect URLs containing secrets.
+        let detail = match status.code() {
+            Some(6) => "Could not resolve the download host",
+            Some(7) => "Could not connect to the download host",
+            Some(22) => "The server returned an HTTP error",
+            Some(28) => "The download timed out",
+            Some(47) => "The download followed too many redirects",
+            Some(60) => "Could not verify the server certificate",
+            _ => return Err(format!("AppImage download failed ({status})")),
+        };
+        return Err(format!("AppImage download failed ({status}). {detail}"));
     }
     Ok(())
 }
@@ -671,7 +734,7 @@ mod tests {
 
     fn import(store: &Store, path: &Path) -> Result<(), String> {
         let source = Source::parse(path.to_str().unwrap())?;
-        store.install(&source.name()?, source, None)
+        store.install(&source.name()?, source, None, &mut |_| {})
     }
 
     #[test]
@@ -690,7 +753,8 @@ mod tests {
 
     #[test]
     fn validates_sources_and_derives_safe_url_names() {
-        let source = Source::parse("https://example.com/My%20App.appimage?token=1").unwrap();
+        let source =
+            Source::parse("https://user:secret@example.com/My%20App.appimage?token=1").unwrap();
         assert_eq!(source.name().unwrap(), "My App");
         assert!(Source::parse("http://example.com/App.AppImage").is_err());
         assert!(
@@ -716,7 +780,21 @@ mod tests {
         let alias = directory.path().join("Alias.AppImage");
         symlink(&path, &alias).unwrap();
 
-        import(&store, &alias).unwrap();
+        let source = Source::parse(alias.to_str().unwrap()).unwrap();
+        let mut messages = Vec::new();
+        store
+            .install(&source.name().unwrap(), source, None, &mut |message| {
+                messages.push(message.to_owned());
+            })
+            .unwrap();
+        assert_eq!(
+            messages,
+            [
+                "Copying Example App from a local file",
+                "Verifying the AppImage header for Example App",
+                "Installing Example App",
+            ]
+        );
         let entry = store.installed().unwrap().pop().unwrap();
         assert_eq!(entry.name, "Example App");
         assert_eq!(entry.origin.as_deref(), path.to_str());
@@ -728,7 +806,11 @@ mod tests {
         assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o640);
         assert!(import(&store, &path).is_err());
 
-        store.remove(&entry).unwrap();
+        messages.clear();
+        store
+            .remove(&entry, &mut |message| messages.push(message.to_owned()))
+            .unwrap();
+        assert_eq!(messages, ["Removing Example App"]);
         assert!(store.installed().unwrap().is_empty());
         assert!(!entry.path.exists());
         assert_eq!(fs::read(path).unwrap(), content);
@@ -747,20 +829,25 @@ mod tests {
         import(&store, &original).unwrap();
 
         let first = store.installed().unwrap().pop().unwrap();
-        let result = store.replace(&first, Source::Local(new_source.clone()));
+        let result = store.replace(&first, Source::Local(new_source.clone()), &mut |_| {});
         assert!(result.unwrap_err().contains("ELF header"));
         assert_eq!(store.installed().unwrap(), vec![first.clone()]);
         assert_eq!(fs::read(&first.path).unwrap(), original_content);
 
         let new_content = fixture(&new_source, 5);
         store
-            .replace(&first, Source::Local(new_source.clone()))
+            .replace(&first, Source::Local(new_source.clone()), &mut |_| {})
             .unwrap();
         let second = store.installed().unwrap().pop().unwrap();
         assert_eq!(second.path, first.path);
         assert_eq!(second.origin.as_deref(), new_source.to_str());
         assert_eq!(fs::read(&second.path).unwrap(), new_content);
-        assert!(store.remove(&first).unwrap_err().contains("has changed"));
+        assert!(
+            store
+                .remove(&first, &mut |_| {})
+                .unwrap_err()
+                .contains("has changed")
+        );
     }
 
     #[test]
@@ -777,8 +864,23 @@ mod tests {
         let entries = store.installed().unwrap();
         fs::remove_file(&first).unwrap();
         let updated_content = fixture(&second, 9);
-        let message = store.update(&entries).unwrap_err();
+        let mut messages = Vec::new();
+        let message = store
+            .update(&entries, &mut |message| messages.push(message.to_owned()))
+            .unwrap_err();
         assert!(message.contains("Refreshed 1 of 2 AppImages"));
+        assert_eq!(
+            messages,
+            [
+                "Refreshing First (1/2)",
+                "Could not refresh First",
+                "Refreshing Second (2/2)",
+                "Copying Second from a local file",
+                "Verifying the AppImage header for Second",
+                "Installing Second",
+                "Refreshed Second",
+            ]
+        );
         assert_eq!(fs::read(&entries[0].path).unwrap(), first_content);
         assert_eq!(fs::read(&entries[1].path).unwrap(), updated_content);
     }
@@ -800,7 +902,7 @@ mod tests {
         let entry = store.installed().unwrap().pop().unwrap();
         let extra = entry.path.parent().unwrap().join("keep.txt");
         fs::write(&extra, "keep me").unwrap();
-        assert!(store.remove(&entry).is_err());
+        assert!(store.remove(&entry, &mut |_| {}).is_err());
         assert_eq!(fs::read_to_string(extra).unwrap(), "keep me");
     }
 }

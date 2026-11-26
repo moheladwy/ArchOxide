@@ -6,10 +6,12 @@ mod fonts;
 mod input;
 mod packages;
 mod picker;
+mod pty;
 mod reads;
 mod source_views;
 mod terminal;
 mod themes;
+mod transaction_terminal;
 mod ui;
 
 use std::process::ExitCode;

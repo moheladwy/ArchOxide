@@ -75,7 +75,6 @@ pub struct Sources {
     pub flatpak_search: ReadState,
     pub flatpak_search_id: u64,
     pub images: Catalog<appimage::Entry, PathBuf>,
-    pub image_busy: bool,
 }
 
 pub fn flatpak_key(app: &flatpak::InstalledApp) -> FlatpakKey {

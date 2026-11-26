@@ -64,6 +64,17 @@ jobs:
                           encoding="utf-8",
                       )
                       pacman.chmod(0o755)
+                      sudo = Path(directory) / "sudo"
+                      sudo.write_text(
+                          '#!/bin/sh\n'
+                          '[ "$#" -eq 2 ] && [ "$1" = pacman ] && [ "$2" = -Syu ] || exit 2\n'
+                          '[ -t 0 ] && [ -t 1 ] && [ -t 2 ] || exit 3\n'
+                          "printf 'archoxide-ci-confirm '\n"
+                          'IFS= read -r answer && [ "$answer" = yes ] || exit 4\n'
+                          "printf 'archoxide-ci-done\\n'\n",
+                          encoding="utf-8",
+                      )
+                      sudo.chmod(0o755)
                       env = dict(os.environ, PATH=directory, TERM="xterm-256color", XDG_CONFIG_HOME=directory)
 
                       master, slave = pty.openpty()
@@ -73,14 +84,25 @@ jobs:
                           with subprocess.Popen(["target/debug/archoxide"], stdin=slave, stdout=slave, stderr=slave, env=env) as app:
                               try:
                                   output = bytearray()
-                                  deadline = time.monotonic() + 10
-                                  while b"archoxide-ci-fixture" not in output:
-                                      remaining = deadline - time.monotonic()
-                                      if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
-                                          raise RuntimeError(f"Installed view did not render the fixture: {output[-1024:]!r}")
-                                      output.extend(os.read(master, 4096))
 
-                                  os.write(master, b" q")
+                                  def wait_for(marker):
+                                      deadline = time.monotonic() + 10
+                                      while marker not in output:
+                                          remaining = deadline - time.monotonic()
+                                          if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
+                                              raise RuntimeError(f"Missing {marker!r} in terminal output: {output[-1024:]!r}")
+                                          output.extend(os.read(master, 4096))
+
+                                  wait_for(b"archoxide-ci-fixture")
+                                  os.write(master, b" u\r")
+                                  wait_for(b"archoxide-ci-confirm")
+                                  os.write(master, b"yes\r")
+                                  wait_for(b"archoxide-ci-done")
+                                  wait_for(b"Enter/Esc")
+                                  if b"\x1b[?1049l" in output:
+                                      raise RuntimeError("The transaction left the TUI's alternate screen")
+
+                                  os.write(master, b"\r q")
                                   if app.wait(timeout=10) != 0:
                                       raise RuntimeError(f"ArchOxide exited with status {app.returncode}")
                                   if termios.tcgetattr(slave) != original_mode:
@@ -92,5 +114,5 @@ jobs:
                           os.close(master)
                           os.close(slave)
 
-                  print("ArchOxide rendered Installed, quit, and restored the terminal.")
+                  print("ArchOxide rendered Installed, answered a transaction prompt in the popup, and restored the terminal on quit.")
                   PY

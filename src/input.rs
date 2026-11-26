@@ -104,6 +104,8 @@ impl Bindings {
 
         if key.modifiers == KeyModifiers::CONTROL {
             return match key.code {
+                KeyCode::Home => Some(First),
+                KeyCode::End => Some(Last),
                 Char('u') => Some(HalfPageUp),
                 Char('d') => Some(HalfPageDown),
                 Char('h') => Some(FocusList),

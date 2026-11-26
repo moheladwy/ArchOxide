@@ -46,15 +46,6 @@ impl App {
             .nth(self.selections[View::AppImages.index()].selected()?)
     }
 
-    pub(super) fn request_quit(&mut self) {
-        if self.sources.image_busy {
-            self.notice =
-                Some("An AppImage operation is in progress. Quit after it finishes.".into());
-        } else {
-            self.should_quit = true;
-        }
-    }
-
     pub(super) fn open_source(&mut self, view: View) {
         match view {
             View::Flatpak if self.sources.flatpaks.state == ReadState::Idle => {
@@ -72,7 +63,7 @@ impl App {
         self.reads.submit(Request::FlatpakInventory(revision));
     }
 
-    fn refresh_image_inventory(&mut self) {
+    pub(super) fn refresh_image_inventory(&mut self) {
         let revision = self.sources.images.begin_read();
         self.reads.submit(Request::ImageInventory(revision));
     }
@@ -177,23 +168,13 @@ impl App {
 
     fn image_action(&mut self, action: Action) -> bool {
         match action {
-            Action::RefreshInventory if !self.sources.image_busy => self.refresh_image_inventory(),
+            Action::RefreshInventory => self.refresh_image_inventory(),
             Action::ToggleMark => {
                 if let Some(path) = self.selected_image().map(|entry| entry.path.clone()) {
                     self.sources.images.toggle(path);
                 }
             }
             Action::ClearMarks => self.sources.images.marks.clear(),
-            Action::Install
-            | Action::ReplaceAppImage
-            | Action::Remove
-            | Action::Upgrade
-            | Action::UpgradeSelected
-            | Action::UpgradeExcept
-                if self.sources.image_busy =>
-            {
-                self.notice = Some("An AppImage operation is already in progress.".into())
-            }
             Action::Install => {
                 self.draft = Some(Draft {
                     field: Field::ImageImport,
@@ -272,12 +253,6 @@ impl App {
         self.confirmation = Some(Transaction::AppImage(operation));
     }
 
-    pub(super) fn start_image_operation(&mut self, operation: appimage::Operation) {
-        self.sources.image_busy = true;
-        self.notice = Some("AppImage operation in progress…".into());
-        self.reads.submit(Request::ImageOperation(operation));
-    }
-
     pub(super) fn apply_source_read(&mut self, response: Response) -> bool {
         match response {
             Response::FlatpakInventory(id, result) if id == self.sources.flatpaks.revision => {
@@ -313,15 +288,6 @@ impl App {
                     .and_then(|path| self.image_rows().position(|entry| entry.path == path));
                 self.selections[View::AppImages.index()].select(row);
                 self.clamp_selection(View::AppImages);
-            }
-            Response::ImageOperation(result) => {
-                self.sources.image_busy = false;
-                self.notice = Some(match result {
-                    Ok(message) | Err(message) => message,
-                });
-                if self.view_enabled(View::AppImages) {
-                    self.refresh_image_inventory();
-                }
             }
             _ => return false,
         }

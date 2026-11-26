@@ -231,9 +231,16 @@ impl App {
 
     pub fn transaction_finished(&mut self, message: String, transaction: &Transaction) {
         self.notice = Some(message);
-        if matches!(transaction, Transaction::Flatpak(_)) {
-            self.refresh_flatpak_inventory();
-            return;
+        match transaction {
+            Transaction::Flatpak(_) => {
+                self.refresh_flatpak_inventory();
+                return;
+            }
+            Transaction::AppImage(_) => {
+                self.refresh_image_inventory();
+                return;
+            }
+            _ => {}
         }
         self.refresh_inventory();
         if self.view == View::Search {
@@ -390,7 +397,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
-            self.request_quit();
+            self.should_quit = true;
             return;
         }
         if let Some(picker) = &mut self.picker {
@@ -430,12 +437,7 @@ impl App {
                         self.confirmation_scroll = 0;
                     }
                     KeyCode::Enter if key.kind == KeyEventKind::Press => {
-                        match self.confirmation.take() {
-                            Some(Transaction::AppImage(operation)) => {
-                                self.start_image_operation(operation)
-                            }
-                            transaction => self.transaction = transaction,
-                        }
+                        self.transaction = self.confirmation.take();
                         self.confirmation_scroll = 0;
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
@@ -526,7 +528,7 @@ impl App {
 
     fn apply_action(&mut self, action: Action) {
         match action {
-            Action::Quit => self.request_quit(),
+            Action::Quit => self.should_quit = true,
             Action::Help => {
                 self.show_help = true;
                 self.help_scroll = 0;
@@ -1085,6 +1087,10 @@ mod tests {
             now,
         );
         assert_eq!(app.selection_mut().selected(), Some(3));
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL), now);
+        assert_eq!(app.selection_mut().selected(), Some(Setting::ALL.len() - 1));
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL), now);
+        assert_eq!(app.selection_mut().selected(), Some(0));
         press(&mut app, "G", now);
         assert_eq!(app.selection_mut().selected(), Some(Setting::ALL.len() - 1));
         app.navigate(Action::Down, 2);
@@ -1347,6 +1353,10 @@ mod tests {
         )));
         let now = Instant::now();
 
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL), now);
+        assert_eq!(app.picker.as_ref().unwrap().selection.selected(), Some(2));
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL), now);
+        assert_eq!(app.picker.as_ref().unwrap().selection.selected(), Some(0));
         press(&mut app, "/dejavu", now);
         app.handle_key(KeyEvent::from(KeyCode::Enter), now);
         assert_eq!(app.setting_value(Setting::FontFamily), "DejaVu Sans Mono");
@@ -1379,7 +1389,6 @@ mod tests {
         assert_eq!(app.setting_value(Setting::AppImages), "Off");
         assert!(app.views().any(|view| view == View::Flatpak));
 
-        app.sources.image_busy = true;
         press(&mut app, "s", now);
         let loaded = Config::load(&path).unwrap();
         assert!(!loaded.packages.flatpak_enabled);
@@ -1391,7 +1400,6 @@ mod tests {
         );
         assert!(!app.apply_read(Response::FlatpakInventory(0, Ok(Vec::new()))));
         assert!(!app.apply_read(Response::ImageInventory(0, Ok(Vec::new()))));
-        assert!(app.apply_read(Response::ImageOperation(Ok("Done".into()))));
         assert!(!app.has_pending_reads());
 
         press(&mut app, " p a", now);

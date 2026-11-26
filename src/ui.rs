@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
+use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
     app::{App, Pane, ReadState, Setting, View},
@@ -14,11 +15,12 @@ use crate::{
     packages::Transaction,
     picker::{Kind as PickerKind, Picker},
     source_views::flatpak_key,
+    transaction_terminal::{self, TransactionTerminal},
 };
 
 const HELP: &[&str] = &[
     "j / k or ↓ / ↑    Move through rows",
-    "gg / G            First or last row",
+    "gg / G or Ctrl+Home / Ctrl+End   First / last row",
     "Ctrl+u / Ctrl+d   Move half a page",
     "h / l or Ctrl+h/l Focus list or details",
     "Tab / Shift+Tab   Next or previous view",
@@ -142,6 +144,33 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(picker) = &mut app.picker {
         draw_picker(frame, picker, area, palette);
     }
+}
+
+pub fn draw_package_terminal(frame: &mut Frame<'_>, app: &App, terminal: &TransactionTerminal) {
+    let palette = Palette::new(app.rendered_theme());
+    let (popup, console, footer) = transaction_terminal::areas(frame.area());
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        palette.panel("Package terminal", true).style(palette.base),
+        popup,
+    );
+    let cursor = Cursor::default()
+        .visibility(terminal.accepts_input() && terminal.screen().scrollback() == 0)
+        .style(Style::new().fg(palette.accent));
+    frame.render_widget(
+        PseudoTerminal::new(terminal.screen())
+            .style(palette.base)
+            .cursor(cursor),
+        console,
+    );
+    let hints = if !terminal.is_running() {
+        " Enter/Esc Close  ·  PgUp/PgDn Scroll"
+    } else if terminal.accepts_input() {
+        " Ctrl+C Interrupt  ·  Shift+PgUp/PgDn Scroll"
+    } else {
+        " Running…  ·  Shift+PgUp/PgDn Scroll"
+    };
+    frame.render_widget(Line::raw(hints).fg(palette.accent), footer);
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {

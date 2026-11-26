@@ -1,8 +1,7 @@
 use std::{
     io::{self, IsTerminal, stdin, stdout},
     mem::MaybeUninit,
-    os::{fd::AsRawFd, unix::process::ExitStatusExt},
-    process::{Command, Stdio},
+    os::fd::AsRawFd,
     time::{Duration, Instant},
 };
 
@@ -10,15 +9,17 @@ use ratatui::{
     DefaultTerminal,
     crossterm::{
         cursor::Show,
-        event::{self, Event},
+        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event},
         execute,
-        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+        terminal::{LeaveAlternateScreen, disable_raw_mode},
     },
+    layout::Rect,
 };
 
-use crate::{app::App, packages::Transaction, ui};
+use crate::{app::App, transaction_terminal::TransactionTerminal, ui};
 
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 pub fn run(mut app: App) -> io::Result<()> {
     if !stdin().is_terminal() || !stdout().is_terminal() {
@@ -41,7 +42,7 @@ pub fn run(mut app: App) -> io::Result<()> {
 fn restore_terminal() -> io::Result<()> {
     // Attempt both cleanup operations even if setup or raw-mode restoration fails.
     let raw_mode = disable_raw_mode();
-    let screen = execute!(stdout(), LeaveAlternateScreen, Show);
+    let screen = execute!(stdout(), DisableBracketedPaste, LeaveAlternateScreen, Show);
     raw_mode.and(screen)
 }
 
@@ -51,6 +52,7 @@ fn run_loop(
     original_mode: &libc::termios,
 ) -> io::Result<()> {
     let mut needs_draw = true;
+    let mut popup: Option<TransactionTerminal> = None;
     while !app.should_quit {
         let now = Instant::now();
         if app
@@ -62,14 +64,33 @@ fn run_loop(
             needs_draw = true;
         }
         needs_draw |= app.poll_reads();
+        if let Some(popup) = &mut popup {
+            needs_draw |= popup.poll(original_mode);
+            if let Some(message) = popup.take_outcome() {
+                app.transaction_finished(message, &popup.transaction);
+                needs_draw = true;
+            }
+        }
         if needs_draw {
-            terminal.draw(|frame| ui::draw(frame, app))?;
+            terminal.draw(|frame| {
+                ui::draw(frame, app);
+                if let Some(popup) = &popup {
+                    ui::draw_package_terminal(frame, app, popup);
+                }
+            })?;
             needs_draw = false;
         }
 
         let mut timeout = app.bindings.remaining(Instant::now());
-        if app.has_pending_reads() {
-            timeout = Some(timeout.map_or(READ_POLL_INTERVAL, |time| time.min(READ_POLL_INTERVAL)));
+        let poll_interval = if popup.as_ref().is_some_and(TransactionTerminal::is_running) {
+            Some(TERMINAL_POLL_INTERVAL)
+        } else if app.has_pending_reads() {
+            Some(READ_POLL_INTERVAL)
+        } else {
+            None
+        };
+        if let Some(interval) = poll_interval {
+            timeout = Some(timeout.map_or(interval, |time| time.min(interval)));
         }
         if let Some(timeout) = timeout
             && !event::poll(timeout)?
@@ -78,119 +99,39 @@ fn run_loop(
         }
         match event::read()? {
             Event::Key(key) => {
-                app.handle_key(key, Instant::now());
-                if let Some(transaction) = app.take_transaction() {
-                    run_transaction(terminal, app, transaction, original_mode)?;
+                if let Some(display) = &mut popup {
+                    if display.handle_key(key, original_mode.c_cc[libc::VERASE]) {
+                        popup = None;
+                        execute!(stdout(), DisableBracketedPaste)?;
+                    }
+                } else {
+                    app.handle_key(key, Instant::now());
+                    if let Some(transaction) = app.take_transaction() {
+                        popup = Some(TransactionTerminal::new(
+                            transaction,
+                            terminal.size()?.into(),
+                        ));
+                        execute!(stdout(), EnableBracketedPaste)?;
+                    }
                 }
                 needs_draw = true;
             }
-            Event::Resize(_, _) => needs_draw = true,
+            Event::Paste(text) => {
+                if let Some(popup) = &mut popup {
+                    popup.paste(&text);
+                    needs_draw = true;
+                }
+            }
+            Event::Resize(width, height) => {
+                if let Some(popup) = &mut popup {
+                    popup.resize(Rect::new(0, 0, width, height));
+                }
+                needs_draw = true;
+            }
             _ => {}
         }
     }
     Ok(())
-}
-
-fn run_transaction(
-    terminal: &mut DefaultTerminal,
-    app: &mut App,
-    transaction: Transaction,
-    original_mode: &libc::termios,
-) -> io::Result<()> {
-    let commands = match transaction.commands() {
-        Ok(commands) if commands.is_empty() => {
-            app.transaction_finished("No applications to update".into(), &transaction);
-            return Ok(());
-        }
-        Ok(commands) => commands,
-        Err(message) => {
-            app.transaction_finished(message, &transaction);
-            return Ok(());
-        }
-    };
-
-    // Terminal signals go to the foreground process group, including ArchOxide.
-    // Catch them for the handoff so exec can give the child its default handlers.
-    let _signal_handlers = match InterruptHandler::catch(libc::SIGINT)
-        .and_then(|interrupt| InterruptHandler::catch(libc::SIGQUIT).map(|quit| (interrupt, quit)))
-    {
-        Ok(handlers) => handlers,
-        Err(error) => {
-            app.transaction_finished(
-                format!("Could not prepare the terminal handoff ({error})"),
-                &transaction,
-            );
-            return Ok(());
-        }
-    };
-
-    let outcome = match restore_terminal() {
-        Ok(()) => run_commands(commands, original_mode),
-        Err(error) => format!("Could not hand off the terminal ({error})"),
-    };
-    let resumed = resume_terminal(terminal, original_mode);
-    app.transaction_finished(outcome, &transaction);
-    resumed
-}
-
-fn resume_terminal(
-    terminal: &mut DefaultTerminal,
-    original_mode: &libc::termios,
-) -> io::Result<()> {
-    // A child that exits during a prompt can leave different terminal settings.
-    apply_terminal_mode(original_mode)?;
-    enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
-    // Reset Ratatui's previous frame and pick up any resize during the transaction.
-    terminal.resize(terminal.size()?.into())
-}
-
-fn run_commands(commands: Vec<Command>, original_mode: &libc::termios) -> String {
-    let total = commands.len();
-    let mut success = String::new();
-    for (index, mut command) in commands.into_iter().enumerate() {
-        let result = apply_terminal_mode(original_mode)
-            .map_err(|error| format!("Could not set terminal mode ({error})"))
-            .and_then(|()| command_outcome(&mut command));
-        match result {
-            Ok(message) => success = message,
-            Err(error) if index > 0 => {
-                return format!("Completed {index} of {total} commands. {error}");
-            }
-            Err(error) => return error,
-        }
-    }
-    if total > 1 {
-        format!("All {total} commands completed successfully")
-    } else {
-        success
-    }
-}
-
-fn command_outcome(command: &mut Command) -> Result<String, String> {
-    let program = command.get_program().to_string_lossy().into_owned();
-    let mut child = match command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(format!(
-                "Could not start {program} because its executable was not found"
-            ));
-        }
-        Err(error) => return Err(format!("Could not start {program} ({error})")),
-    };
-    match child.wait() {
-        Ok(status) if status.success() => Ok(format!("{program} completed successfully")),
-        Ok(status) if status.signal() == Some(libc::SIGINT) => {
-            Err(format!("{program} was interrupted"))
-        }
-        Ok(status) => Err(format!("{program} failed ({status})")),
-        Err(error) => Err(format!("Could not wait for {program} ({error})")),
-    }
 }
 
 fn terminal_mode() -> io::Result<libc::termios> {
@@ -208,76 +149,4 @@ fn apply_terminal_mode(mode: &libc::termios) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
-}
-
-struct InterruptHandler {
-    signal: libc::c_int,
-    previous: libc::sigaction,
-}
-
-impl InterruptHandler {
-    fn catch(signal: libc::c_int) -> io::Result<Self> {
-        extern "C" fn handle_interrupt(_: libc::c_int) {}
-
-        // SAFETY: sigaction can be zero-initialized before setting its handler and mask.
-        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-        action.sa_sigaction = handle_interrupt as *const () as libc::sighandler_t;
-        action.sa_flags = libc::SA_RESTART;
-        let mut previous = MaybeUninit::uninit();
-        // SAFETY: The handler does nothing, and sigaction writes previous on success.
-        unsafe {
-            libc::sigemptyset(&mut action.sa_mask);
-            if libc::sigaction(signal, &action, previous.as_mut_ptr()) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(Self {
-                signal,
-                previous: previous.assume_init(),
-            })
-        }
-    }
-}
-
-impl Drop for InterruptHandler {
-    fn drop(&mut self) {
-        // SAFETY: Restore the handler returned by sigaction for this signal.
-        unsafe { libc::sigaction(self.signal, &self.previous, std::ptr::null_mut()) };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reports_foreground_command_outcomes() {
-        let mut success = Command::new("sh");
-        success.args(["-c", "exit 0"]);
-        assert_eq!(
-            command_outcome(&mut success),
-            Ok("sh completed successfully".into())
-        );
-
-        let mut failure = Command::new("sh");
-        failure.args(["-c", "exit 7"]);
-        assert_eq!(
-            command_outcome(&mut failure),
-            Err("sh failed (exit status: 7)".into())
-        );
-
-        let mut interrupt = Command::new("sh");
-        interrupt.args(["-c", "kill -INT $$"]);
-        assert_eq!(
-            command_outcome(&mut interrupt),
-            Err("sh was interrupted".into())
-        );
-
-        let directory = tempfile::tempdir().unwrap();
-        let mut missing = Command::new(directory.path().join("missing-command"));
-        assert!(
-            command_outcome(&mut missing)
-                .unwrap_err()
-                .contains("executable was not found")
-        );
-    }
 }

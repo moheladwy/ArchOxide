@@ -116,7 +116,9 @@ impl Picker {
             self.refilter(None);
             return None;
         }
-        if !plain_key(key) {
+        let jump = key.modifiers == KeyModifiers::CONTROL
+            && matches!(key.code, KeyCode::Home | KeyCode::End);
+        if !(plain_key(key) || jump) {
             return None;
         }
         match key.code {

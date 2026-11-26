@@ -17,7 +17,8 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 | Key | Action |
 | --- | --- |
 | `Tab` / `Shift+Tab` | Switch views. `Alt+Tab` and `Alt+Shift+Tab` also work when forwarded by the terminal. |
-| `j` / `k`, `gg` / `G`, `Ctrl+u` / `Ctrl+d` | Move, jump to the first or last row, or move half a page. |
+| `j` / `k`, `Ctrl+u` / `Ctrl+d` | Move by a row or half a page. |
+| `gg` / `G`, `Ctrl+Home` / `Ctrl+End` | Jump to the first or last row. |
 | `h` / `l`, `Ctrl+h` / `Ctrl+l` | Focus the list or details pane when both are visible. |
 | `/`, `a`, `R` | Filter Installed or open Search. In Installed, `a` cycles availability and `R` reloads the list. |
 | `i`, `d` | Install the selected result or remove the highlighted installed package. |
@@ -29,6 +30,8 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 | `?`, `Space q` | Show keybinding help or quit. |
 
 In installed lists, `u` and `U` use the marked items, or the highlighted row when there are no marks. Marks survive filtering. Press `Enter` to confirm a transaction or `Esc` to cancel.
+
+Confirmed installs, removals, and updates open a terminal popup with live output. Answer package-manager prompts directly in the popup. Use `Ctrl+C` to interrupt an interactive command and `Shift+PgUp` or `Shift+PgDn` to scroll. Press `Enter` or `Esc` to close the popup after the operation finishes.
 
 Updating selected packages uses the cached repository databases. Updating all except selected refreshes the databases and applies the exclusions for that run. Both modes preserve package-manager dependency checks. Arch supports full system upgrades, and selective upgrades can leave dependencies out of sync. [Pacman manual](https://man.archlinux.org/man/pacman.8), [Arch system maintenance](https://wiki.archlinux.org/title/System_maintenance#Partial_upgrades_are_unsupported)
 
