@@ -383,7 +383,7 @@ fn disabled_sources_are_persisted_and_skipped_by_navigation() {
     assert!(loaded.packages.aur_enabled);
     assert_eq!(
         app.views().collect::<Vec<_>>(),
-        [View::Installed, View::Search, View::Settings]
+        [View::Installed, View::Search, View::Apps, View::Settings]
     );
     assert!(!app.apply_read(Response::FlatpakInventory(0, Ok(Vec::new()))));
     assert!(!app.apply_read(Response::ImageInventory(0, Ok(Vec::new()))));
@@ -398,7 +398,11 @@ fn disabled_sources_are_persisted_and_skipped_by_navigation() {
             .contains("AppImages support is off")
     );
     app.handle_key(KeyEvent::from(KeyCode::BackTab), now);
+    assert_eq!(app.view, View::Apps);
+    app.handle_key(KeyEvent::from(KeyCode::BackTab), now);
     assert_eq!(app.view, View::Search);
+    app.handle_key(KeyEvent::from(KeyCode::Tab), now);
+    assert_eq!(app.view, View::Apps);
     app.handle_key(KeyEvent::from(KeyCode::Tab), now);
     assert_eq!(app.view, View::Settings);
 
@@ -474,4 +478,54 @@ fn unified_search_preserves_sources_and_dispatches_installs() {
         Some(Transaction::AppImage(crate::appimage::Operation::Import(url)))
             if url == "https://example.org/demo.AppImage"
     ));
+}
+
+#[test]
+fn apps_tab_is_reachable_without_enabling_package_sources() {
+    let mut config = Config::default();
+    config.packages.flatpak_enabled = false;
+    config.packages.appimage_enabled = false;
+    let mut app = App::new(config, None, None);
+    let now = Instant::now();
+
+    app.handle_key(KeyEvent::from(KeyCode::Tab), now);
+    app.handle_key(KeyEvent::from(KeyCode::Tab), now);
+
+    assert_eq!(app.view.title(), "Apps");
+    assert!(app.views().any(|view| view.title() == "Apps"));
+    assert!(app.has_pending_reads());
+
+    press(&mut app, "diuUxX u", now);
+    assert!(app.confirmation.is_none());
+    assert!(app.take_transaction().is_none());
+}
+
+#[test]
+fn apps_filter_uses_the_launcher_name_and_restores_the_list_on_escape() {
+    let mut app = App {
+        view: View::Apps,
+        ..App::default()
+    };
+    let entry = |id: &str, name: &str| crate::desktop_apps::Entry {
+        id: id.into(),
+        name: name.into(),
+        comment: String::new(),
+        path: PathBuf::from(format!("/examples/{id}.desktop")),
+    };
+    assert!(app.apply_read(Response::DesktopApps(
+        0,
+        Ok(vec![
+            entry("org.example.Browser", "Web Browser"),
+            entry("org.example.Editor", "Editor"),
+        ]),
+    )));
+    assert_eq!(app.desktop_app_rows().count(), 2);
+
+    let now = Instant::now();
+    press(&mut app, "/BROWSER", now);
+    assert_eq!(app.selected_desktop_app().unwrap().name, "Web Browser");
+    assert_eq!(app.desktop_app_rows().count(), 1);
+
+    app.handle_key(KeyEvent::from(KeyCode::Esc), now);
+    assert_eq!(app.desktop_app_rows().count(), 2);
 }

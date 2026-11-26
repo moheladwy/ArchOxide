@@ -11,6 +11,7 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 - **Installed packages.** Filter the inventory by name, version, or availability. The Foreign label means a package is absent from the configured repository databases.
 - **Search and package changes.** Search Pacman repositories, AUR, configured Flatpak remotes, and managed AppImages together. Every result shows the package name on the left and the source type on the right; repository or Flatpak remote and installation scope remain in the result details. Install a result from its displayed source, remove an installed package, and update all packages, only selected packages, or all except selected packages. Package-manager prompts remain interactive, including build review when `yay` offers it. Repository features also work without `yay`.
 - **Flatpak and AppImages.** Manage apps using configured Flatpak installations or import AppImages from local files and direct HTTPS downloads.
+- **Apps.** Browse and open desktop launchers from your session’s XDG application directories, including Flatpak exports on its data path. Opening apps uses `gio` from the `glib2` package on Arch Linux.
 - **Settings.** Preview 18 themes, including all 15 DWM Titus palettes. Choose an installed font family, set its size, adjust row density and details width, and toggle AUR, Flatpak, or AppImages support.
 
 ## Keys
@@ -26,10 +27,11 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 | `Space u`, `u`, `U` | Update all apps in the current source, update selected apps, or update all except selected apps. Use `u` and `U` in an installed list. |
 | `x`, `X` | Toggle the highlighted app’s mark or clear all marks in the current installed list. |
 | `Space e`, `Space f f`, `Space f t` | Open Installed, focus Search, or select Theme in Settings. |
-| `Space p`, `Space a` | Open Flatpak or AppImages. |
+| `Space p`, `Space a`, `Space o` | Open Flatpak, AppImages, or Apps. |
 | `f`, `Esc` | Search Flatpak remotes or return to installed Flatpaks from the results. |
 | `i`, `e` in AppImages | Import an AppImage or replace the highlighted managed copy. |
-| `Enter`, `s`, `r` | Edit the selected setting, save changes, or load defaults into the draft. |
+| `Enter` | Open the selected desktop app in Apps or edit the selected setting in Settings. |
+| `s`, `r` | In Settings, save changes or load defaults into the draft. |
 | `?`, `Space q` | Show keybinding help or quit. |
 
 ## Package transactions

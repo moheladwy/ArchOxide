@@ -21,6 +21,7 @@ pub enum Action {
     Theme,
     Flatpak,
     AppImages,
+    Apps,
     SearchFlatpak,
     ReplaceAppImage,
     Prompt,
@@ -33,7 +34,7 @@ pub enum Action {
     UpgradeExcept,
     ToggleMark,
     ClearMarks,
-    EditSetting,
+    Activate,
     SaveSettings,
     ResetSettings,
     Help,
@@ -90,6 +91,7 @@ impl Bindings {
                 (Some(Prefix::Leader), Char('e')) => return Some(Installed),
                 (Some(Prefix::Leader), Char('p')) => return Some(Flatpak),
                 (Some(Prefix::Leader), Char('a')) => return Some(AppImages),
+                (Some(Prefix::Leader), Char('o')) => return Some(Apps),
                 (Some(Prefix::Leader), Char('f')) => {
                     self.pending = Some((Prefix::Find, now + SEQUENCE_TIMEOUT));
                     return None;
@@ -149,7 +151,7 @@ impl Bindings {
             Char('X') => Some(ClearMarks),
             Char('s') => Some(SaveSettings),
             Char('r') => Some(ResetSettings),
-            KeyCode::Enter => Some(EditSetting),
+            KeyCode::Enter => Some(Activate),
             Char('?') => Some(Help),
             Char('g') => {
                 self.pending = Some((Prefix::Go, now + SEQUENCE_TIMEOUT));

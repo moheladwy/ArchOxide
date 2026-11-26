@@ -215,7 +215,7 @@ pub fn yay_available() -> bool {
     env::split_paths(&path).any(|directory| executable(&directory.join("yay")))
 }
 
-fn executable(path: &Path) -> bool {
+pub(crate) fn executable(path: &Path) -> bool {
     path.metadata()
         .is_ok_and(|info| info.is_file() && info.permissions().mode() & 0o111 != 0)
 }
