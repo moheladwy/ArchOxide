@@ -75,7 +75,9 @@ Press `Enter` on **Flatpak support** or **AppImages support** to toggle that sou
 - `cargo clippy --locked --all-targets -- -D warnings` checks the application and its tests for lint warnings.
 - `cargo test --locked` runs the test suite.
 
-The [CI workflow](.github/workflows/ci.yml) runs on pull requests and on pushes to `main` that touch source files, the workflow, or Cargo metadata. Its smoke test drives a fixture transaction through the terminal popup.
+Unit test files live under `tests/unit/` and mirror their source modules. They run with `cargo test --locked` and can access private code through their parent modules.
+
+The [CI workflow](.github/workflows/ci.yml) runs on pull requests and on pushes to `main` that touch source files, test files, the workflow, or Cargo metadata. Its smoke test drives a fixture transaction through the terminal popup.
 
 ## Contributing
 
