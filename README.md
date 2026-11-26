@@ -21,7 +21,7 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 | `Tab` / `Shift+Tab` | Switch views. `Alt+Tab` and `Alt+Shift+Tab` also work when forwarded by the terminal. |
 | `j` / `k`, `Ctrl+u` / `Ctrl+d` | Move by a row or half a page. |
 | `gg` / `G`, `Ctrl+Home` / `Ctrl+End` | Jump to the first or last row. |
-| `h` / `l`, `Ctrl+h` / `Ctrl+l` | Focus the list or details pane when both are visible. |
+| `h` / `l`, `Ctrl+h` / `Ctrl+l` | Return to the list or focus Details. On narrow terminals, Details takes the full width for packages. |
 | `/`, `a`, `R` | Filter an installed list or edit the search query. In Installed, `a` cycles availability. `R` reloads inventories and Flatpak search results. |
 | `i`, `d` | Install the selected result or remove the highlighted installed package. |
 | `Space u`, `u`, `U` | Update all apps in the current source, update selected apps, or update all except selected apps. Use `u` and `U` in an installed list. |
@@ -33,6 +33,12 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 | `Enter` | Open the selected desktop app in Apps or edit the selected setting in Settings. |
 | `s`, `r` | In Settings, save changes or load defaults into the draft. |
 | `?`, `Space q` | Show keybinding help or quit. |
+
+## Package details
+
+Highlight a package to load its full record in **Details**. Installed Arch packages use `pacman -Qi`, repository search results use `pacman -Si`, and AUR results use `yay -Si --aur`. Flatpak details come from the selected installation and remote. AppImages show their saved source and available local file information.
+
+Press `l` to focus Details, then use `j`/`k` to scroll, `Ctrl+u`/`Ctrl+d` to move by half a page, or `gg`/`G` to jump to the start or end. Press `h` or `Esc` to return to the list.
 
 ## Package transactions
 

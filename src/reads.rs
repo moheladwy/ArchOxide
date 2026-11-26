@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    appimage, desktop_apps, flatpak, fonts,
+    appimage, desktop_apps, flatpak, fonts, package_details,
     packages::{self, Inventory, SearchResult, SearchSource},
 };
 
@@ -14,6 +14,7 @@ const FLATPAK_SEARCH_SLOT: usize = 7;
 const IMAGE_INVENTORY_SLOT: usize = 8;
 const DESKTOP_APPS_SLOT: usize = 9;
 const LAUNCH_DESKTOP_APP_SLOT: usize = 10;
+const PACKAGE_INFO_SLOT: usize = 11;
 
 pub const SEARCH_SOURCES: [SearchSource; 4] = [
     SearchSource::Repository,
@@ -41,6 +42,7 @@ pub enum Request {
     ImageInventory(u64),
     DesktopApps(u64),
     LaunchDesktopApp(desktop_apps::Entry),
+    PackageInfo(u64, package_details::Target),
 }
 
 impl Request {
@@ -54,6 +56,7 @@ impl Request {
             Self::ImageInventory(_) => IMAGE_INVENTORY_SLOT,
             Self::DesktopApps(_) => DESKTOP_APPS_SLOT,
             Self::LaunchDesktopApp(_) => LAUNCH_DESKTOP_APP_SLOT,
+            Self::PackageInfo(..) => PACKAGE_INFO_SLOT,
         }
     }
 
@@ -68,6 +71,7 @@ impl Request {
             Self::FlatpakSearch(id, query) => Response::FlatpakSearch(id, flatpak::search(&query)),
             Self::ImageInventory(id) => Response::ImageInventory(id, appimage::installed()),
             Self::DesktopApps(id) => Response::DesktopApps(id, Ok(desktop_apps::installed())),
+            Self::PackageInfo(id, target) => Response::PackageInfo(id, target.read()),
             Self::LaunchDesktopApp(entry) => {
                 let result = entry.launch();
                 Response::LaunchDesktopApp(entry.name, result)
@@ -85,6 +89,7 @@ impl Request {
             Self::ImageInventory(id) => Response::ImageInventory(id, Err(error)),
             Self::DesktopApps(id) => Response::DesktopApps(id, Err(error)),
             Self::LaunchDesktopApp(entry) => Response::LaunchDesktopApp(entry.name, Err(error)),
+            Self::PackageInfo(id, _) => Response::PackageInfo(id, Err(error)),
         }
     }
 }
@@ -99,6 +104,7 @@ pub enum Response {
     ImageInventory(u64, Result<Vec<appimage::Entry>, String>),
     DesktopApps(u64, Result<Vec<desktop_apps::Entry>, String>),
     LaunchDesktopApp(String, Result<(), String>),
+    PackageInfo(u64, Result<String, String>),
 }
 
 impl Response {
@@ -112,6 +118,7 @@ impl Response {
             Self::ImageInventory(..) => IMAGE_INVENTORY_SLOT,
             Self::DesktopApps(..) => DESKTOP_APPS_SLOT,
             Self::LaunchDesktopApp(..) => LAUNCH_DESKTOP_APP_SLOT,
+            Self::PackageInfo(..) => PACKAGE_INFO_SLOT,
         }
     }
 }
@@ -124,7 +131,7 @@ struct Slot {
 
 #[derive(Debug)]
 pub struct Reads {
-    slots: [Slot; LAUNCH_DESKTOP_APP_SLOT + 1],
+    slots: [Slot; PACKAGE_INFO_SLOT + 1],
     sender: Sender<Response>,
     receiver: Receiver<Response>,
 }
@@ -174,6 +181,10 @@ impl Reads {
 
     pub fn clear_image_inventory(&mut self) {
         self.slots[IMAGE_INVENTORY_SLOT].queued = None;
+    }
+
+    pub fn clear_queued_package_info(&mut self) {
+        self.slots[PACKAGE_INFO_SLOT].queued = None;
     }
 
     pub fn receive(&mut self) -> Option<Response> {

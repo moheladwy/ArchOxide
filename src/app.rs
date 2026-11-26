@@ -18,9 +18,12 @@ use crate::{
 };
 
 mod desktop_actions;
+mod package_details;
 mod source_actions;
 
 use desktop_actions::DesktopApps;
+pub use package_details::Info as PackageInfo;
+use package_details::PackageDetails;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {
@@ -52,6 +55,13 @@ impl View {
             Self::Apps => "Apps",
             Self::Settings => "Settings",
         }
+    }
+
+    pub fn has_package_details(self) -> bool {
+        matches!(
+            self,
+            Self::Installed | Self::Search | Self::Flatpak | Self::AppImages
+        )
     }
 
     fn index(self) -> usize {
@@ -182,6 +192,7 @@ pub struct App {
     pub picker: Option<Picker>,
     pub sources: Sources,
     pub desktop_apps: DesktopApps,
+    pub package_details: PackageDetails,
     config_path: Option<PathBuf>,
     settings: Config,
     pub installed_state: ReadState,
@@ -240,6 +251,7 @@ impl App {
 
     pub fn transaction_finished(&mut self, message: String, transaction: &Transaction) {
         self.notice = Some(message);
+        self.sync_package_details(false);
         match transaction {
             Transaction::Flatpak(_) => self.refresh_flatpak_inventory(),
             Transaction::AppImage(_) => self.refresh_image_inventory(),
@@ -399,6 +411,7 @@ impl App {
             self.focus = Pane::List;
         }
         self.clamp_selection(self.view);
+        self.sync_package_details(details_visible);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, now: Instant) {
@@ -468,6 +481,10 @@ impl App {
         }
         if key.code == KeyCode::Esc && self.bindings.pending_label().is_none() {
             self.notice = None;
+            if self.focus == Pane::Details && self.view.has_package_details() {
+                self.focus = Pane::List;
+                return;
+            }
             if self.view == View::Flatpak && self.sources.flatpak_query.is_some() {
                 self.leave_flatpak_search();
                 return;
@@ -544,6 +561,9 @@ impl App {
     }
 
     fn apply_action(&mut self, action: Action) {
+        if action == Action::RefreshInventory {
+            self.sync_package_details(false);
+        }
         match action {
             Action::Quit => self.should_quit = true,
             Action::Help => {
@@ -566,7 +586,9 @@ impl App {
             }
             Action::Prompt => self.open_prompt(),
             Action::FocusList => self.focus = Pane::List,
-            Action::FocusDetails if self.details_visible => self.focus = Pane::Details,
+            Action::FocusDetails if self.details_visible || self.view.has_package_details() => {
+                self.focus = Pane::Details;
+            }
             Action::CycleAvailability if self.view == View::Installed => self.cycle_availability(),
             Action::RefreshInventory if self.view == View::Installed => self.refresh_inventory(),
             Action::RefreshInventory if self.view == View::Apps => self.refresh_desktop_apps(),
@@ -611,8 +633,14 @@ impl App {
             Action::SaveSettings if self.view == View::Settings => self.save_settings(),
             Action::ResetSettings if self.view == View::Settings => self.reset_settings(),
             _ => {
-                if !self.apply_source_action(action) && self.focus == Pane::List {
-                    self.navigate(action, self.row_count(self.view));
+                if !self.apply_source_action(action) {
+                    match self.focus {
+                        Pane::List => self.navigate(action, self.row_count(self.view)),
+                        Pane::Details if self.view.has_package_details() => {
+                            self.scroll_package_details(action);
+                        }
+                        Pane::Details => {}
+                    }
                 }
             }
         }
@@ -819,6 +847,9 @@ impl App {
     }
 
     fn invalidate_search(&mut self) {
+        if self.view == View::Search {
+            self.sync_package_details(false);
+        }
         self.search_id = self.search_id.wrapping_add(1);
         self.reads.clear_queued_searches();
         self.search_results = Default::default();
@@ -936,6 +967,13 @@ impl App {
                 self.notice = Some(match result {
                     Ok(()) => format!("Opened {name}."),
                     Err(error) => error,
+                });
+                true
+            }
+            Response::PackageInfo(id, result) if id == self.package_details.revision => {
+                self.package_details.info = Some(match result {
+                    Ok(info) => PackageInfo::Ready(info),
+                    Err(error) => PackageInfo::Failed(error),
                 });
                 true
             }

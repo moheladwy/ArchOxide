@@ -8,7 +8,7 @@ use ratatui::{
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
-    app::{App, Pane, ReadState, Setting, View},
+    app::{App, PackageInfo, Pane, ReadState, Setting, View},
     appimage,
     config::{Density, Theme},
     flatpak,
@@ -254,6 +254,11 @@ fn draw_prompt(
 
 fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palette) {
     let has_details = area.width >= 72 && area.height >= 4;
+    if !has_details && app.focus == Pane::Details && app.view.has_package_details() {
+        app.update_layout(0, true);
+        draw_details(frame, app, area, palette);
+        return;
+    }
     let [list_area, details_area] = if has_details {
         let width = u16::from(app.config.appearance.details_width_percent);
         Layout::horizontal([
@@ -549,7 +554,7 @@ fn fit_search_text(text: &str, width: usize) -> String {
     result
 }
 
-fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
+fn draw_details(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palette) {
     let lines = match app.view {
         View::Installed => app.selected_installed().map(|package| {
             vec![
@@ -625,13 +630,40 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) 
         }),
     };
     let block = palette.panel("Details", app.focus == Pane::Details);
-    if let Some(lines) = lines {
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: true }).block(block),
-            area,
-        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if let Some(mut lines) = lines {
+        match &app.package_details.info {
+            Some(PackageInfo::Loading) => {
+                lines.push(Line::raw(""));
+                lines.push(Line::raw("Loading package information…").fg(palette.muted));
+            }
+            Some(PackageInfo::Ready(info)) if !info.is_empty() => {
+                lines.push(Line::raw(""));
+                lines.extend(info.lines().map(|line| Line::raw(one_line(line))));
+            }
+            Some(PackageInfo::Failed(error)) => {
+                lines.push(Line::raw(""));
+                lines.push(Line::raw(one_line(error)).fg(palette.accent));
+            }
+            Some(PackageInfo::Ready(_)) | None => {}
+        }
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+        let hidden_rows = paragraph
+            .line_count(inner.width)
+            .saturating_sub(usize::from(inner.height));
+        let scroll_limit = u16::try_from(hidden_rows).unwrap_or(u16::MAX);
+        let scroll = app.details_scroll().min(scroll_limit);
+        frame.render_widget(paragraph.scroll((scroll, 0)), inner);
+        app.update_details_layout(scroll_limit, inner.height);
     } else {
-        frame.render_widget(block, area);
+        if app.focus == Pane::Details && app.view.has_package_details() {
+            frame.render_widget(
+                Paragraph::new("Select a package to view its details."),
+                inner,
+            );
+        }
+        app.update_details_layout(0, inner.height);
     }
 }
 
@@ -768,20 +800,22 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
             area,
         );
         return;
+    } else if app.focus == Pane::Details && app.view.has_package_details() {
+        " h Back  j/k Scroll  Ctrl+u/d Page  gg/G First/last"
     } else {
         match app.view {
             View::Installed => {
-                " ? Help  x Mark  u Selected  U Except  Space u All  / Filter  d Remove  Tab Views"
+                " ? Help  l Details  / Filter  x Mark  u Selected  U Except  Space u All  d Remove"
             }
-            View::Search => " ? Help  / Search  i Install  Space u All  Tab Views",
+            View::Search => " ? Help  l Details  / Search  i Install  Space u All  Tab Views",
             View::Flatpak if app.sources.flatpak_query.is_some() => {
-                " ? Help  f Search  i Install  Esc Installed  Tab Views"
+                " ? Help  l Details  f Search  i Install  Esc Installed  Tab Views"
             }
             View::Flatpak => {
-                " ? Help  f Search  / Filter  d Remove  u/U Update  Space u All  x Mark"
+                " ? Help  l Details  f Search  / Filter  d Remove  u/U Update  Space u All  x Mark"
             }
             View::AppImages => {
-                " ? Help  i Import  e Replace  d Remove  u/U Update  Space u All  x Mark"
+                " ? Help  l Details  i Import  e Replace  d Remove  u/U Update  Space u All  x Mark"
             }
             View::Apps => " Enter Open  / Filter  R Refresh  Tab Views  ? Help",
             View::Settings => " ? Help  Enter Edit  s Save  r Reset  Tab Views",
