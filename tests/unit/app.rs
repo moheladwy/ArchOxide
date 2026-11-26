@@ -186,7 +186,12 @@ fn search_keeps_repository_results_when_aur_fails_and_discards_stale_response() 
 #[test]
 fn search_preserves_the_selected_source_when_repository_rows_arrive_later() {
     let mut app = App {
-        search_states: [ReadState::Loading; SEARCH_SOURCES.len()],
+        search_states: [
+            ReadState::Loading,
+            ReadState::Loading,
+            ReadState::Idle,
+            ReadState::Idle,
+        ],
         ..App::default()
     };
     let repo = search_result("same-name", Source::Repository("extra".into()));
