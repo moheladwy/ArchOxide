@@ -1,0 +1,806 @@
+use std::{
+    env,
+    ffi::{CString, OsString},
+    fs::{self, DirBuilder, File, Metadata, OpenOptions},
+    io::{self, Read, Seek, Write},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    },
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
+
+use serde::{Deserialize, Serialize};
+use tempfile::TempDir;
+
+const EXTENSION: &str = ".AppImage";
+const MANIFEST: &str = "origin.toml";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub path: PathBuf,
+    pub origin: Option<String>,
+    directory_id: (u64, u64),
+    image_id: (u64, u64),
+}
+
+#[derive(Clone, Debug)]
+pub enum Operation {
+    Import(String),
+    Remove(Entry),
+    Update(Vec<Entry>),
+    Replace(Entry, String),
+}
+
+pub fn installed() -> Result<Vec<Entry>, String> {
+    let Some(store) = Store::open(false)? else {
+        return Ok(Vec::new());
+    };
+    store.installed()
+}
+
+impl Operation {
+    pub fn run(&self) -> Result<String, String> {
+        let store = Store::open(true)?.ok_or("AppImage storage is unavailable")?;
+        match self {
+            Self::Import(input) => {
+                let source = Source::parse(input)?;
+                let name = source.name()?;
+                store.install(&name, source, None)?;
+                Ok(format!("Imported {name}"))
+            }
+            Self::Remove(entry) => {
+                store.remove(entry)?;
+                Ok(format!("Removed {}", entry.name))
+            }
+            Self::Update(entries) => store.update(entries),
+            Self::Replace(entry, input) => {
+                store.replace(entry, Source::parse(input)?)?;
+                Ok(format!("Replaced {}", entry.name))
+            }
+        }
+    }
+}
+
+struct Store {
+    root: PathBuf,
+    _lock: File,
+}
+
+impl Store {
+    fn open(write: bool) -> Result<Option<Self>, String> {
+        let root = data_path(env::var_os("XDG_DATA_HOME"), env::var_os("HOME"))?;
+        Self::at(&root, write)
+    }
+
+    fn at(root: &Path, write: bool) -> Result<Option<Self>, String> {
+        let parent = root.parent().ok_or("Invalid AppImage storage path")?;
+        if write && let Some(data_home) = parent.parent() {
+            fs::create_dir_all(data_home)
+                .map_err(|error| file_error("create data directory", data_home, error))?;
+        }
+        if !real_directory(parent, write)? || !real_directory(root, write)? {
+            return Ok(None);
+        }
+
+        let lock = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(root)
+            .map_err(|error| file_error("open AppImage storage", root, error))?;
+        if write {
+            lock.lock()
+        } else {
+            lock.lock_shared()
+        }
+        .map_err(|error| file_error("lock AppImage storage", root, error))?;
+        let root = root
+            .canonicalize()
+            .map_err(|error| file_error("locate AppImage storage", root, error))?;
+        let opened = lock
+            .metadata()
+            .map_err(|error| file_error("inspect AppImage storage", &root, error))?;
+        if metadata(&root)?.as_ref().map(identity) != Some(identity(&opened)) {
+            return Err("AppImage storage changed while opening it".to_owned());
+        }
+        Ok(Some(Self { root, _lock: lock }))
+    }
+
+    fn installed(&self) -> Result<Vec<Entry>, String> {
+        let rows = fs::read_dir(&self.root)
+            .map_err(|error| file_error("list AppImage storage", &self.root, error))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let row =
+                row.map_err(|error| file_error("read AppImage storage", &self.root, error))?;
+            if let Some(name) = row.file_name().to_str()
+                && let Some(entry) = self.entry(name)?
+            {
+                entries.push(entry);
+            }
+        }
+        entries.sort_unstable_by(|first, second| first.name.cmp(&second.name));
+        Ok(entries)
+    }
+
+    fn entry(&self, name: &str) -> Result<Option<Entry>, String> {
+        if !valid_name(name) {
+            return Ok(None);
+        }
+        let directory = self.root.join(name);
+        let Some(directory_metadata) = metadata(&directory)?.filter(Metadata::is_dir) else {
+            return Ok(None);
+        };
+        let manifest_path = directory.join(MANIFEST);
+        let Some(manifest_file) = open_managed_file(&manifest_path)? else {
+            return Ok(None);
+        };
+        let mut contents = String::new();
+        if manifest_file
+            .take(64 * 1024)
+            .read_to_string(&mut contents)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let Ok(manifest) = toml::from_str::<Manifest>(&contents) else {
+            return Ok(None);
+        };
+        if manifest.name != name || manifest.origin.as_deref().is_some_and(has_control) {
+            return Ok(None);
+        }
+        let path = directory.join(image_filename(name));
+        let Some(image_metadata) = metadata(&path)?.filter(single_link_file) else {
+            return Ok(None);
+        };
+        Ok(Some(Entry {
+            name: name.to_owned(),
+            path,
+            origin: manifest.origin,
+            directory_id: identity(&directory_metadata),
+            image_id: identity(&image_metadata),
+        }))
+    }
+
+    fn current_directory(&self, entry: &Entry) -> Result<PathBuf, String> {
+        if self.entry(&entry.name)?.as_ref() != Some(entry) {
+            return Err(format!(
+                "{} has changed. Refresh AppImages and try again.",
+                entry.name
+            ));
+        }
+        let directory = self.root.join(&entry.name);
+        let image = image_filename(&entry.name);
+        let files = fs::read_dir(&directory)
+            .map_err(|error| file_error("read managed AppImage directory", &directory, error))?;
+        for file in files {
+            let file = file.map_err(|error| {
+                file_error("read managed AppImage directory", &directory, error)
+            })?;
+            if file.file_name() != MANIFEST && file.file_name() != image.as_str() {
+                return Err(format!(
+                    "{} contains other files. Move them before changing this AppImage.",
+                    directory.display()
+                ));
+            }
+        }
+        Ok(directory)
+    }
+
+    fn replace(&self, entry: &Entry, source: Source) -> Result<(), String> {
+        self.current_directory(entry)?;
+        self.install(&entry.name, source, Some(entry))
+    }
+
+    fn remove(&self, entry: &Entry) -> Result<(), String> {
+        let directory = self.current_directory(entry)?;
+        let staging = self.staging()?;
+        let retired = staging.path().join("removed");
+        rename_directory(&directory, &retired, libc::RENAME_NOREPLACE)
+            .map_err(|error| file_error("remove AppImage", &directory, error))?;
+        delete_retired(staging, &retired, &entry.name)
+    }
+
+    fn update(&self, entries: &[Entry]) -> Result<String, String> {
+        if entries.is_empty() {
+            return Err("No AppImages to refresh".to_owned());
+        }
+        let mut refreshed = 0;
+        let mut failures = Vec::new();
+        for entry in entries {
+            let result = entry
+                .origin
+                .as_deref()
+                .ok_or_else(|| "Set an update source using Replace".to_owned())
+                .and_then(Source::parse)
+                .and_then(|source| self.replace(entry, source));
+            match result {
+                Ok(()) => refreshed += 1,
+                Err(error) => failures.push(format!("{}: {error}", entry.name)),
+            }
+        }
+        let summary = format!("Refreshed {refreshed} of {} AppImages", entries.len());
+        if failures.is_empty() {
+            Ok(summary)
+        } else {
+            Err(format!("{summary}. {}", failures.join(". ")))
+        }
+    }
+
+    fn install(&self, name: &str, source: Source, previous: Option<&Entry>) -> Result<(), String> {
+        let destination = self.root.join(name);
+        if previous.is_none() && metadata(&destination)?.is_some() {
+            return Err(format!("An AppImage entry named {name} already exists"));
+        }
+        let staging = self.staging()?;
+        let bundle = staging.path().join("bundle");
+        DirBuilder::new()
+            .mode(0o700)
+            .create(&bundle)
+            .map_err(|error| file_error("stage AppImage", &bundle, error))?;
+        let image_path = bundle.join(image_filename(name));
+        let mut image = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&image_path)
+            .map_err(|error| file_error("stage AppImage", &image_path, error))?;
+        source.transfer(&self.root, &mut image)?;
+        validate_header(&image)?;
+        image
+            .set_permissions(fs::Permissions::from_mode(0o700))
+            .and_then(|()| image.sync_all())
+            .map_err(|error| file_error("save AppImage", &image_path, error))?;
+
+        let manifest = Manifest {
+            name: name.to_owned(),
+            origin: Some(source.origin()?),
+        };
+        let contents = toml::to_string(&manifest)
+            .map_err(|error| format!("Could not encode AppImage origin ({error})"))?;
+        let manifest_path = bundle.join(MANIFEST);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&manifest_path)
+            .and_then(|mut file| {
+                file.write_all(contents.as_bytes())?;
+                file.sync_all()
+            })
+            .map_err(|error| file_error("save AppImage origin", &manifest_path, error))?;
+
+        // Publish the binary and its source in one rename.
+        let flags = if let Some(previous) = previous {
+            self.current_directory(previous)?;
+            libc::RENAME_EXCHANGE
+        } else {
+            libc::RENAME_NOREPLACE
+        };
+        rename_directory(&bundle, &destination, flags)
+            .map_err(|error| file_error("publish AppImage", &destination, error))?;
+        if previous.is_some() {
+            delete_retired(staging, &bundle, name)?;
+        }
+        Ok(())
+    }
+
+    fn staging(&self) -> Result<TempDir, String> {
+        tempfile::Builder::new()
+            .prefix(".stage-")
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(&self.root)
+            .map_err(|error| file_error("stage AppImage", &self.root, error))
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    name: String,
+    origin: Option<String>,
+}
+
+enum Source {
+    Local(PathBuf),
+    Https(String),
+}
+
+impl Source {
+    fn parse(input: &str) -> Result<Self, String> {
+        if input.is_empty() || has_control(input) || input.len() > 8192 {
+            return Err("Enter a local AppImage path or a direct HTTPS URL".to_owned());
+        }
+        if input
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+        {
+            return Ok(Self::Https(input.to_owned()));
+        }
+        if input.contains("://") {
+            return Err("AppImage download URLs must use HTTPS".to_owned());
+        }
+        let path = match input.strip_prefix("~/") {
+            Some(relative) => env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute())
+                .ok_or("Set HOME to an absolute path to use ~/ in an AppImage path")?
+                .join(relative),
+            None => PathBuf::from(input),
+        };
+        let path = path
+            .canonicalize()
+            .map_err(|error| file_error("find AppImage source", &path, error))?;
+        let source = Self::Local(path);
+        source.origin()?;
+        Ok(source)
+    }
+
+    fn origin(&self) -> Result<String, String> {
+        match self {
+            Self::Local(path) => path
+                .to_str()
+                .filter(|path| !has_control(path))
+                .map(str::to_owned)
+                .ok_or_else(|| "The AppImage source path must be printable UTF-8".to_owned()),
+            Self::Https(url) => Ok(url.clone()),
+        }
+    }
+
+    fn name(&self) -> Result<String, String> {
+        let filename = match self {
+            Self::Local(path) => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned),
+            Self::Https(url) => url[8..]
+                .split(['?', '#'])
+                .next()
+                .and_then(|location| location.split_once('/'))
+                .and_then(|(_, path)| percent_decoded(path.rsplit('/').next()?)),
+        }
+        .ok_or("The AppImage source must include a file name")?;
+        let name = filename
+            .len()
+            .checked_sub(EXTENSION.len())
+            .and_then(|index| filename.get(index..).zip(filename.get(..index)))
+            .filter(|(suffix, _)| suffix.eq_ignore_ascii_case(EXTENSION))
+            .map_or(filename.as_str(), |(_, stem)| stem);
+        if !valid_name(name) {
+            return Err("AppImage names must start with a letter or number and use letters, numbers, spaces, dots, hyphens, underscores or plus signs".to_owned());
+        }
+        Ok(name.to_owned())
+    }
+
+    fn transfer(&self, root: &Path, destination: &mut File) -> Result<(), String> {
+        match self {
+            Self::Local(path) => {
+                if path.starts_with(root) {
+                    return Err("Choose a source outside managed AppImage storage".to_owned());
+                }
+                let mut source = open_file(path)
+                    .map_err(|error| file_error("open AppImage source", path, error))?;
+                let metadata = source
+                    .metadata()
+                    .map_err(|error| file_error("read AppImage source", path, error))?;
+                if !metadata.is_file() {
+                    return Err("The AppImage source must be a regular file".to_owned());
+                }
+                validate_header(&source)?;
+                let copied = io::copy(
+                    &mut Read::by_ref(&mut source).take(metadata.len()),
+                    destination,
+                )
+                .map_err(|error| file_error("copy AppImage source", path, error))?;
+                if copied != metadata.len()
+                    || source
+                        .read(&mut [0])
+                        .map_err(|error| file_error("read AppImage source", path, error))?
+                        != 0
+                {
+                    return Err("The AppImage source size changed while copying".to_owned());
+                }
+                Ok(())
+            }
+            Self::Https(url) => download(url, destination),
+        }
+    }
+}
+
+fn download(url: &str, destination: &File) -> Result<(), String> {
+    let output = destination
+        .try_clone()
+        .map_err(|error| format!("Could not open staged AppImage download ({error})"))?;
+    let output = Command::new("curl")
+        .args([
+            "--disable",
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--location",
+            "--globoff",
+            "--disallow-username-in-url",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--connect-timeout",
+            "15",
+            "--max-time",
+            "300",
+            "--max-redirs",
+            "10",
+            "--url",
+            url,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output))
+        .output()
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => {
+                "Install curl to download AppImages from HTTPS URLs".to_owned()
+            }
+            _ => format!("Could not start AppImage download ({error})"),
+        })?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail: String = detail
+            .trim()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(250)
+            .collect();
+        return Err(
+            format!("AppImage download failed ({}) {detail}", output.status)
+                .trim_end()
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn data_path(data_home: Option<OsString>, home: Option<OsString>) -> Result<PathBuf, String> {
+    let parent = data_home
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            home.map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".local/share"))
+        })
+        .ok_or("Set XDG_DATA_HOME or HOME to an absolute path to manage AppImages")?;
+    Ok(parent.join("archoxide/appimages"))
+}
+
+fn real_directory(path: &Path, create: bool) -> Result<bool, String> {
+    let existing = metadata(path)?;
+    if !create && existing.is_none() {
+        return Ok(false);
+    }
+    if existing.is_none() {
+        match DirBuilder::new().mode(0o700).create(path) {
+            Ok(()) => return Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(file_error("create AppImage storage", path, error)),
+        }
+    }
+    if !metadata(path)?.is_some_and(|metadata| metadata.is_dir()) {
+        return Err(format!(
+            "AppImage storage needs a real directory at {}",
+            path.display()
+        ));
+    }
+    Ok(true)
+}
+
+fn metadata(path: &Path) -> Result<Option<Metadata>, String> {
+    match path.symlink_metadata() {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(file_error("inspect AppImage path", path, error)),
+    }
+}
+
+fn open_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+fn open_managed_file(path: &Path) -> Result<Option<File>, String> {
+    if !metadata(path)?.as_ref().is_some_and(single_link_file) {
+        return Ok(None);
+    }
+    let file = open_file(path).map_err(|error| file_error("open AppImage origin", path, error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| file_error("inspect AppImage origin", path, error))?;
+    Ok(single_link_file(&metadata).then_some(file))
+}
+
+fn single_link_file(metadata: &Metadata) -> bool {
+    metadata.is_file() && metadata.nlink() == 1
+}
+
+fn identity(metadata: &Metadata) -> (u64, u64) {
+    (metadata.dev(), metadata.ino())
+}
+
+fn image_filename(name: &str) -> String {
+    format!("{name}{EXTENSION}")
+}
+
+fn delete_retired(staging: TempDir, directory: &Path, name: &str) -> Result<(), String> {
+    let staging_path = staging.keep();
+    fs::remove_file(directory.join(image_filename(name)))
+        .and_then(|()| fs::remove_file(directory.join(MANIFEST)))
+        .and_then(|()| fs::remove_dir(directory))
+        .and_then(|()| fs::remove_dir(staging_path))
+        .map_err(|error| file_error("clean up the previous AppImage", directory, error))
+}
+
+fn valid_name(name: &str) -> bool {
+    name.len() <= 240
+        && name.chars().next().is_some_and(char::is_alphanumeric)
+        && name.trim_end() == name
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-' | '+'))
+}
+
+fn has_control(value: &str) -> bool {
+    value
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+}
+
+fn percent_decoded(value: &str) -> Option<String> {
+    let mut bytes = value.bytes();
+    let mut decoded = Vec::new();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = char::from(bytes.next()?).to_digit(16)?;
+            let low = char::from(bytes.next()?).to_digit(16)?;
+            decoded.push((high * 16 + low) as u8);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn validate_header(mut file: &File) -> Result<(), String> {
+    let mut header = [0; 64];
+    let invalid = || "The file does not have a valid AppImage ELF header".to_owned();
+    let read_error = |error: io::Error| match error.kind() {
+        io::ErrorKind::UnexpectedEof => invalid(),
+        _ => format!("Could not read AppImage header ({error})"),
+    };
+    file.rewind()
+        .map_err(|error| format!("Could not read AppImage header ({error})"))?;
+    file.read_exact(&mut header[..16]).map_err(read_error)?;
+    let header_size = match header[4] {
+        1 => 52,
+        2 => 64,
+        _ => return Err(invalid()),
+    };
+    file.read_exact(&mut header[16..header_size])
+        .map_err(read_error)?;
+    let read_u16 = match header[5] {
+        1 => u16::from_le_bytes,
+        2 => u16::from_be_bytes,
+        _ => return Err(invalid()),
+    };
+    let version = if header[5] == 1 {
+        [1, 0, 0, 0]
+    } else {
+        [0, 0, 0, 1]
+    };
+    if header[..4] != *b"\x7fELF"
+        || header[6] != 1
+        || header[8..10] != *b"AI"
+        || !matches!(header[10], 1 | 2)
+        || !matches!(read_u16([header[16], header[17]]), 2 | 3)
+        || read_u16([header[18], header[19]]) == 0
+        || header[20..24] != version
+        || read_u16([header[header_size - 12], header[header_size - 11]]) != header_size as u16
+        || file
+            .metadata()
+            .map_err(|error| format!("Could not inspect AppImage ({error})"))?
+            .len()
+            <= header_size as u64
+    {
+        return Err(invalid());
+    }
+    file.rewind()
+        .map_err(|error| format!("Could not seek in AppImage ({error})"))
+}
+
+fn rename_directory(source: &Path, destination: &Path, flags: libc::c_uint) -> io::Result<()> {
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let destination = CString::new(destination.as_os_str().as_bytes())?;
+    // Both paths and their containing storage remain alive for the syscall.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            flags,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn file_error(action: &str, path: &Path, error: io::Error) -> String {
+    format!("Could not {action} at {} ({error})", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn fixture(path: &Path, payload: u8) -> Vec<u8> {
+        let mut bytes = vec![0; 65];
+        bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        bytes[8..11].copy_from_slice(b"AI\x02");
+        bytes[16] = 3;
+        bytes[18] = 62;
+        bytes[20] = 1;
+        bytes[52] = 64;
+        bytes[64] = payload;
+        fs::write(path, &bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
+        bytes
+    }
+
+    fn store(directory: &Path) -> Store {
+        Store::at(&directory.join("archoxide/appimages"), true)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn import(store: &Store, path: &Path) -> Result<(), String> {
+        let source = Source::parse(path.to_str().unwrap())?;
+        store.install(&source.name()?, source, None)
+    }
+
+    #[test]
+    fn data_directory_honors_absolute_xdg_paths_and_falls_back_to_home() {
+        let home = Some("/home/example".into());
+        assert_eq!(
+            data_path(Some("/data".into()), home.clone()).unwrap(),
+            Path::new("/data/archoxide/appimages")
+        );
+        assert_eq!(
+            data_path(Some("relative".into()), home).unwrap(),
+            Path::new("/home/example/.local/share/archoxide/appimages")
+        );
+        assert!(data_path(None, None).is_err());
+    }
+
+    #[test]
+    fn validates_sources_and_derives_safe_url_names() {
+        let source = Source::parse("https://example.com/My%20App.appimage?token=1").unwrap();
+        assert_eq!(source.name().unwrap(), "My App");
+        assert!(Source::parse("http://example.com/App.AppImage").is_err());
+        assert!(
+            Source::parse("https://example.com/App%2fImage")
+                .unwrap()
+                .name()
+                .is_err()
+        );
+        assert!(
+            Source::parse("https://example.com/%2e%2e")
+                .unwrap()
+                .name()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn imports_and_removes_only_the_managed_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(directory.path());
+        let path = directory.path().join("Example App.AppImage");
+        let content = fixture(&path, 4);
+        let alias = directory.path().join("Alias.AppImage");
+        symlink(&path, &alias).unwrap();
+
+        import(&store, &alias).unwrap();
+        let entry = store.installed().unwrap().pop().unwrap();
+        assert_eq!(entry.name, "Example App");
+        assert_eq!(entry.origin.as_deref(), path.to_str());
+        assert_eq!(fs::read(&entry.path).unwrap(), content);
+        assert_eq!(
+            entry.path.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o640);
+        assert!(import(&store, &path).is_err());
+
+        store.remove(&entry).unwrap();
+        assert!(store.installed().unwrap().is_empty());
+        assert!(!entry.path.exists());
+        assert_eq!(fs::read(path).unwrap(), content);
+    }
+
+    #[test]
+    fn a_failed_replacement_keeps_the_binary_and_origin() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(directory.path());
+        let original = directory.path().join("Example.AppImage");
+        let original_content = fixture(&original, 4);
+        let new_source = directory.path().join("Example-v2.AppImage");
+        let mut plain_elf = fixture(&new_source, 5);
+        plain_elf[8..11].fill(0);
+        fs::write(&new_source, plain_elf).unwrap();
+        import(&store, &original).unwrap();
+
+        let first = store.installed().unwrap().pop().unwrap();
+        let result = store.replace(&first, Source::Local(new_source.clone()));
+        assert!(result.unwrap_err().contains("ELF header"));
+        assert_eq!(store.installed().unwrap(), vec![first.clone()]);
+        assert_eq!(fs::read(&first.path).unwrap(), original_content);
+
+        let new_content = fixture(&new_source, 5);
+        store
+            .replace(&first, Source::Local(new_source.clone()))
+            .unwrap();
+        let second = store.installed().unwrap().pop().unwrap();
+        assert_eq!(second.path, first.path);
+        assert_eq!(second.origin.as_deref(), new_source.to_str());
+        assert_eq!(fs::read(&second.path).unwrap(), new_content);
+        assert!(store.remove(&first).unwrap_err().contains("has changed"));
+    }
+
+    #[test]
+    fn refreshes_other_entries_when_one_source_is_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(directory.path());
+        let first = directory.path().join("First.AppImage");
+        let first_content = fixture(&first, 4);
+        let second = directory.path().join("Second.AppImage");
+        fixture(&second, 5);
+        import(&store, &first).unwrap();
+        import(&store, &second).unwrap();
+
+        let entries = store.installed().unwrap();
+        fs::remove_file(&first).unwrap();
+        let updated_content = fixture(&second, 9);
+        let message = store.update(&entries).unwrap_err();
+        assert!(message.contains("Refreshed 1 of 2 AppImages"));
+        assert_eq!(fs::read(&entries[0].path).unwrap(), first_content);
+        assert_eq!(fs::read(&entries[1].path).unwrap(), updated_content);
+    }
+
+    #[test]
+    fn preserves_unmanaged_entries_and_refuses_to_follow_storage_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(directory.path());
+        let path = directory.path().join("Example.AppImage");
+        fixture(&path, 4);
+        let unmanaged = store.root.join("Example");
+        symlink(directory.path(), &unmanaged).unwrap();
+        assert!(store.installed().unwrap().is_empty());
+        assert!(import(&store, &path).is_err());
+        assert!(unmanaged.is_symlink());
+        fs::remove_file(unmanaged).unwrap();
+
+        import(&store, &path).unwrap();
+        let entry = store.installed().unwrap().pop().unwrap();
+        let extra = entry.path.parent().unwrap().join("keep.txt");
+        fs::write(&extra, "keep me").unwrap();
+        assert!(store.remove(&entry).is_err());
+        assert_eq!(fs::read_to_string(extra).unwrap(), "keep me");
+    }
+}

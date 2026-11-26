@@ -8,8 +8,12 @@ use ratatui::{
 
 use crate::{
     app::{App, Pane, ReadState, Setting, View},
+    appimage,
     config::{Density, Theme},
+    flatpak,
     packages::Transaction,
+    picker::{Kind as PickerKind, Picker},
+    source_views::flatpak_key,
 };
 
 const HELP: &[&str] = &[
@@ -27,6 +31,10 @@ const HELP: &[&str] = &[
     "u / U             Update selected / all except selected",
     "x / X             Toggle package mark / clear marks",
     "Space e           Open Installed",
+    "Space p / Space a Open Flatpak / AppImages",
+    "f                 Search Flatpak remotes",
+    "Esc               Return to installed Flatpaks",
+    "i / e             Import / replace an AppImage",
     "Space f f         Open package search",
     "Space f t         Go to Theme",
     "Enter             Edit selected setting",
@@ -47,29 +55,7 @@ struct Palette {
 
 impl Palette {
     fn new(theme: Theme) -> Self {
-        let (fg, bg, muted, accent, selection) = match theme {
-            Theme::Dark => (
-                Color::Rgb(230, 237, 243),
-                Color::Rgb(18, 24, 32),
-                Color::Rgb(142, 159, 176),
-                Color::Rgb(114, 222, 213),
-                Color::Rgb(37, 59, 68),
-            ),
-            Theme::Light => (
-                Color::Rgb(25, 38, 50),
-                Color::Rgb(246, 249, 252),
-                Color::Rgb(80, 98, 116),
-                Color::Rgb(0, 102, 111),
-                Color::Rgb(210, 233, 236),
-            ),
-            Theme::Terminal => (
-                Color::Reset,
-                Color::Reset,
-                Color::Reset,
-                Color::Cyan,
-                Color::Reset,
-            ),
-        };
+        let (fg, bg, muted, accent, selection) = theme.colors();
         Self {
             base: Style::new().fg(fg).bg(bg),
             muted,
@@ -97,7 +83,7 @@ impl Palette {
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
-    let palette = Palette::new(app.config.appearance.theme);
+    let palette = Palette::new(app.rendered_theme());
     frame.render_widget(Block::new().style(palette.base), area);
 
     if area.height < 7 || area.width < 12 {
@@ -115,6 +101,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 palette,
             );
         }
+        if let Some(picker) = &mut app.picker {
+            draw_picker(frame, picker, area, palette);
+        }
         return;
     }
 
@@ -131,7 +120,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     ])
     .areas(area);
 
-    draw_header(frame, app.view, header, palette);
+    draw_header(frame, app, header, palette);
     if let Some((title, text)) = prompt {
         draw_prompt(frame, input, title, text, app.editing(), palette);
     }
@@ -150,20 +139,30 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             palette,
         );
     }
+    if let Some(picker) = &mut app.picker {
+        draw_picker(frame, picker, area, palette);
+    }
 }
 
-fn draw_header(frame: &mut Frame<'_>, active: View, area: Rect, palette: Palette) {
-    if area.width < 29 {
-        frame.render_widget(Line::from(active.title()).style(palette.highlight()), area);
+fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
+    let tabs_width = app
+        .views()
+        .map(|view| view.title().len() + 2)
+        .sum::<usize>();
+    if usize::from(area.width) < tabs_width {
+        frame.render_widget(
+            Line::from(app.view.title()).style(palette.highlight()),
+            area,
+        );
         return;
     }
     let mut labels = Vec::new();
-    if area.width >= 41 {
+    if usize::from(area.width) >= tabs_width + " ArchOxide  ".len() {
         labels.push(" ArchOxide  ".bold());
     }
-    for view in View::ALL {
+    for view in app.views() {
         let label = Span::raw(format!(" {} ", view.title()));
-        labels.push(if view == active {
+        labels.push(if view == app.view {
             label.style(palette.highlight())
         } else {
             label
@@ -222,6 +221,9 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
     let title = match app.view {
         View::Installed => "Packages",
         View::Search => "Results",
+        View::Flatpak if app.sources.flatpak_query.is_some() => "Flatpak results",
+        View::Flatpak => "Installed Flatpaks",
+        View::AppImages => "Managed AppImages",
         View::Settings => "Preferences",
     };
     let base = palette.panel(title, has_details && app.focus == Pane::List);
@@ -266,6 +268,52 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
                 )
             })
             .collect(),
+        View::Flatpak if app.sources.flatpak_query.is_some() => app
+            .sources
+            .flatpak_results
+            .iter()
+            .map(|entry| {
+                package_row(
+                    app_name(&entry.name, &entry.id),
+                    &entry.version,
+                    &installation_label(&entry.remote, &entry.installation),
+                    false,
+                    comfortable,
+                    palette,
+                )
+            })
+            .collect(),
+        View::Flatpak => app
+            .flatpak_rows()
+            .map(|entry| {
+                package_row(
+                    app_name(&entry.name, &entry.id),
+                    &entry.version,
+                    &installation_label(&entry.remote, &entry.installation),
+                    app.sources.flatpaks.marks.contains(&flatpak_key(entry)),
+                    comfortable,
+                    palette,
+                )
+            })
+            .collect(),
+        View::AppImages => app
+            .image_rows()
+            .map(|entry| {
+                let source = match entry.origin.as_deref() {
+                    Some(origin) if origin.starts_with("https://") => "HTTPS download",
+                    Some(_) => "Local file",
+                    None => "Managed AppImage",
+                };
+                package_row(
+                    &entry.name,
+                    "",
+                    source,
+                    app.sources.images.marks.contains(&entry.path),
+                    comfortable,
+                    palette,
+                )
+            })
+            .collect(),
         View::Settings => Setting::ALL
             .into_iter()
             .map(|setting| {
@@ -274,7 +322,7 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
                     Line::from(setting.label()).fg(palette.accent)
                 } else {
                     Line::from(vec![
-                        Span::raw(format!("{:<16}", setting.label())),
+                        Span::raw(format!("{:<18}", setting.label())),
                         value.fg(palette.muted),
                     ])
                 };
@@ -294,6 +342,32 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
             }
             View::Search if app.search_states.contains(&ReadState::Loading) => "Searching…",
             View::Search => "No results from the available sources.",
+            View::Flatpak => {
+                let (state, ready) = if app.sources.flatpak_query.is_some() {
+                    (
+                        &app.sources.flatpak_search,
+                        "No matching apps in configured Flatpak remotes.",
+                    )
+                } else {
+                    (
+                        &app.sources.flatpaks.state,
+                        "No installed Flatpaks match. Press f to search remotes.",
+                    )
+                };
+                match state {
+                    ReadState::Idle | ReadState::Loading => "Reading Flatpak apps…",
+                    ReadState::Ready => ready,
+                    ReadState::Failed(_) => "Flatpak apps could not be read.",
+                }
+            }
+            View::AppImages => match app.sources.images.state {
+                ReadState::Idle | ReadState::Loading => "Reading managed AppImages…",
+                ReadState::Ready if app.sources.images.entries.is_empty() => {
+                    "Press i to import an AppImage from a local file or direct HTTPS URL."
+                }
+                ReadState::Ready => "No managed AppImages match.",
+                ReadState::Failed(_) => "Managed AppImages could not be read.",
+            },
             View::Settings => "",
         };
         frame.render_widget(
@@ -318,6 +392,18 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
     }
 }
 
+fn app_name<'a>(name: &'a str, id: &'a str) -> &'a str {
+    if name.is_empty() { id } else { name }
+}
+
+fn installation_label(remote: &str, installation: &flatpak::Installation) -> String {
+    if remote.is_empty() {
+        installation.to_string()
+    } else {
+        format!("{remote} · {installation}")
+    }
+}
+
 fn package_row(
     name: &str,
     version: &str,
@@ -331,15 +417,17 @@ fn package_row(
     } else {
         name.to_owned()
     };
+    let metadata = if version.is_empty() {
+        source.to_owned()
+    } else {
+        format!("{source}  ·  {version}")
+    };
     if comfortable {
-        ListItem::new(vec![
-            Line::raw(name),
-            Line::raw(format!("{source}  ·  {version}")).fg(palette.muted),
-        ])
+        ListItem::new(vec![Line::raw(name), Line::raw(metadata).fg(palette.muted)])
     } else {
         ListItem::new(Line::from(vec![
             Span::raw(format!("{name}  ")),
-            format!("{source}  ·  {version}").fg(palette.muted),
+            metadata.fg(palette.muted),
         ]))
     }
 }
@@ -362,6 +450,33 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) 
                 Line::raw(format!("Installed {installed}")),
                 Line::raw(""),
                 Line::raw(package.description.as_str()),
+            ]
+        }),
+        View::Flatpak if app.sources.flatpak_query.is_some() => {
+            app.selected_flatpak_result().map(|entry| {
+                vec![
+                    Line::from(app_name(&entry.name, &entry.id)).bold(),
+                    Line::raw(entry.reference.as_str()),
+                    Line::raw(installation_label(&entry.remote, &entry.installation)),
+                    Line::raw(entry.description.as_str()),
+                ]
+            })
+        }
+        View::Flatpak => app.selected_flatpak().map(|entry| {
+            vec![
+                Line::from(app_name(&entry.name, &entry.id)).bold(),
+                Line::raw(entry.reference.as_str()),
+                Line::raw(installation_label(&entry.remote, &entry.installation)),
+                Line::raw(format!("Installed version {}", entry.version)),
+            ]
+        }),
+        View::AppImages => app.selected_image().map(|entry| {
+            vec![
+                Line::from(entry.name.as_str()).bold(),
+                Line::raw(entry.path.display().to_string()),
+                Line::raw(""),
+                Line::raw("Saved source"),
+                Line::raw(entry.origin.as_deref().unwrap_or("—")),
             ]
         }),
         View::Settings => app.selected_setting().map(|setting| {
@@ -442,12 +557,54 @@ fn status_lines(app: &App, palette: Palette) -> Vec<Line<'static>> {
                 }
             }
         }
+        View::Flatpak => {
+            let (state, count, marks) = if app.sources.flatpak_query.is_some() {
+                (
+                    &app.sources.flatpak_search,
+                    app.sources.flatpak_results.len(),
+                    0,
+                )
+            } else {
+                (
+                    &app.sources.flatpaks.state,
+                    app.flatpak_rows().count(),
+                    app.sources.flatpaks.marks.len(),
+                )
+            };
+            app_source_status(&mut lines, state, count, marks, palette);
+        }
+        View::AppImages => app_source_status(
+            &mut lines,
+            &app.sources.images.state,
+            app.image_rows().count(),
+            app.sources.images.marks.len(),
+            palette,
+        ),
         View::Settings if app.settings_dirty() => {
             lines.push(Line::raw(" Unsaved changes").fg(palette.accent));
         }
         View::Settings => {}
     }
     lines
+}
+
+fn app_source_status(
+    lines: &mut Vec<Line<'static>>,
+    state: &ReadState,
+    count: usize,
+    marks: usize,
+    palette: Palette,
+) {
+    match state {
+        ReadState::Failed(error) => lines.push(Line::raw(one_line(error)).fg(palette.accent)),
+        ReadState::Ready if marks == 0 => {
+            lines.push(Line::raw(format!(" {count} apps")).fg(palette.muted))
+        }
+        ReadState::Ready => {
+            lines.push(Line::raw(format!(" {count} apps  ·  {marks} marked")).fg(palette.muted))
+        }
+        _ => {}
+    }
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
@@ -469,6 +626,15 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
                 " ? Help  x Mark  u Selected  U Except  Space u All  / Filter  d Remove  Tab Views"
             }
             View::Search => " ? Help  / Search  i Install  Space u All  Tab Views",
+            View::Flatpak if app.sources.flatpak_query.is_some() => {
+                " ? Help  f Search  i Install  Esc Installed  Tab Views"
+            }
+            View::Flatpak => {
+                " ? Help  f Search  / Filter  d Remove  u/U Update  Space u All  x Mark"
+            }
+            View::AppImages => {
+                " ? Help  i Import  e Replace  d Remove  u/U Update  Space u All  x Mark"
+            }
             View::Settings => " ? Help  Enter Edit  s Save  r Reset  Tab Views",
         }
     };
@@ -502,6 +668,59 @@ fn draw_help(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palette)
     );
 }
 
+fn draw_picker(frame: &mut Frame<'_>, picker: &mut Picker, area: Rect, palette: Palette) {
+    let title = match picker.kind {
+        PickerKind::Theme => "Choose a theme",
+        PickerKind::Font => "Choose an installed font",
+    };
+    let area = centered(area, 70, 24);
+    let block = palette.panel(title, true).style(palette.base);
+    let [filter, list, status, footer] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(block.inner(area));
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    draw_prompt(
+        frame,
+        filter,
+        "Filter choices",
+        &picker.query,
+        picker.editing,
+        palette,
+    );
+    let items: Vec<_> = picker
+        .visible()
+        .map(|choice| ListItem::new(choice.label().to_owned()))
+        .collect();
+    let status_text = if picker.loading {
+        "Reading installed fonts…"
+    } else if let Some(error) = &picker.error {
+        error
+    } else if items.is_empty() {
+        "No matching choices."
+    } else if picker.kind == PickerKind::Theme {
+        "Theme preview follows the highlighted choice."
+    } else {
+        "Saved fonts apply on the next --kitty launch."
+    };
+    frame.render_widget(Line::raw(one_line(status_text)).fg(palette.muted), status);
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_style(palette.highlight())
+            .highlight_symbol("› "),
+        list,
+        &mut picker.selection,
+    );
+    frame.render_widget(
+        Line::raw("Enter Choose  Esc Back  / Filter  ↑↓ Move").fg(palette.accent),
+        footer,
+    );
+}
+
 fn draw_confirmation(
     frame: &mut Frame<'_>,
     transaction: &Transaction,
@@ -514,25 +733,25 @@ fn draw_confirmation(
             "Install package",
             format!("{} {}", package.name, package.version),
             format!("Source {}", package.source),
-            None,
+            Vec::new(),
         ),
         Transaction::Remove(package) => (
             "Remove package",
             format!("{} {}", package.name, package.version),
             format!("Installed package · {}", package.availability.label()),
-            None,
+            Vec::new(),
         ),
         Transaction::Upgrade { aur } => (
             "Full system upgrade",
             "Refresh databases and upgrade installed packages".into(),
             upgrade_sources(*aur).into(),
-            None,
+            Vec::new(),
         ),
         Transaction::UpgradeSelected { aur, names } => (
             "Update selected packages",
             format!("{} selected · Use cached repository databases", names.len()),
             upgrade_sources(*aur).into(),
-            Some(names),
+            names.clone(),
         ),
         Transaction::UpgradeExcept { aur, names } => (
             "Update all except selected",
@@ -541,16 +760,26 @@ fn draw_confirmation(
                 names.len()
             ),
             upgrade_sources(*aur).into(),
-            Some(names),
+            names.clone(),
         ),
+        Transaction::Flatpak(operation) => flatpak_confirmation(operation),
+        Transaction::AppImage(operation) => image_confirmation(operation),
     };
-    let height = names.map_or(8, |names| (names.len().saturating_add(8)).min(18) as u16);
+    let height = (names.len().saturating_add(8)).min(18) as u16;
     let area = centered(area, 70, height);
-    let mut lines = vec![Line::from(target).bold(), Line::raw(source)];
-    if let Some(names) = names {
+    let mut lines = vec![
+        Line::from(one_line(&target)).bold(),
+        Line::raw(one_line(&source)),
+    ];
+    if matches!(
+        transaction,
+        Transaction::UpgradeSelected { .. } | Transaction::UpgradeExcept { .. }
+    ) {
         lines.push(Line::raw("Partial upgrades can break dependencies.").fg(palette.accent));
+    }
+    if !names.is_empty() {
         lines.push(Line::raw(""));
-        lines.extend(names.iter().map(|name| Line::raw(name.as_str())));
+        lines.extend(names.into_iter().map(|name| Line::raw(one_line(&name))));
     }
 
     let block = palette.panel(title, true).style(palette.base);
@@ -579,6 +808,82 @@ fn draw_confirmation(
         body,
     );
     frame.render_widget(Line::raw(hints).fg(palette.accent), controls);
+}
+
+fn flatpak_confirmation(
+    operation: &flatpak::Operation,
+) -> (&'static str, String, String, Vec<String>) {
+    let (title, count, apps) = match operation {
+        flatpak::Operation::Install(app) => {
+            return (
+                "Install Flatpak",
+                app.reference.clone(),
+                installation_label(&app.remote, &app.installation),
+                Vec::new(),
+            );
+        }
+        flatpak::Operation::Remove(app) => {
+            return (
+                "Remove Flatpak",
+                app.reference.clone(),
+                app.installation.to_string(),
+                Vec::new(),
+            );
+        }
+        flatpak::Operation::UpdateAll => {
+            return (
+                "Update all Flatpaks",
+                "Update applications and runtimes".into(),
+                "Configured Flatpak installations".into(),
+                Vec::new(),
+            );
+        }
+        flatpak::Operation::Update(apps) => ("Update selected Flatpaks", "selected", apps),
+        flatpak::Operation::UpdateExcept(apps) => {
+            ("Update all except selected Flatpaks", "excluded", apps)
+        }
+    };
+    let names = apps
+        .iter()
+        .map(|app| format!("{} · {}", app.reference, app.installation))
+        .collect();
+    (
+        title,
+        format!("{} {count}", apps.len()),
+        "Installed Flatpak applications".into(),
+        names,
+    )
+}
+
+fn image_confirmation(
+    operation: &appimage::Operation,
+) -> (&'static str, String, String, Vec<String>) {
+    match operation {
+        appimage::Operation::Import(source) => (
+            "Import AppImage",
+            "Copy into managed AppImages".into(),
+            source.clone(),
+            Vec::new(),
+        ),
+        appimage::Operation::Remove(entry) => (
+            "Remove managed AppImage",
+            entry.name.clone(),
+            entry.path.display().to_string(),
+            Vec::new(),
+        ),
+        appimage::Operation::Replace(entry, source) => (
+            "Replace AppImage",
+            entry.name.clone(),
+            source.clone(),
+            Vec::new(),
+        ),
+        appimage::Operation::Update(entries) => (
+            "Update AppImages",
+            format!("{} managed apps", entries.len()),
+            "Refresh from saved sources".into(),
+            entries.iter().map(|entry| entry.name.clone()).collect(),
+        ),
+    }
 }
 
 fn upgrade_sources(aur: bool) -> &'static str {
@@ -629,6 +934,27 @@ mod tests {
 
         let tiny = render(&mut app, 12, 2);
         assert!(tiny.contains("ArchOxide"));
+    }
+
+    #[test]
+    fn disabled_sources_still_show_switches_in_settings() {
+        let mut config = crate::config::Config::default();
+        config.packages.flatpak_enabled = false;
+        config.packages.appimage_enabled = false;
+        let mut app = App::new(config, None, None);
+        app.view = View::Settings;
+
+        let screen = render(&mut app, 100, 24);
+        let header = screen.lines().next().unwrap();
+        assert!(!header.contains("Flatpak"));
+        assert!(!header.contains("AppImages"));
+        for label in ["Flatpak support", "AppImages support"] {
+            assert!(
+                screen
+                    .lines()
+                    .any(|line| line.contains(label) && line.contains("Off"))
+            );
+        }
     }
 
     #[test]

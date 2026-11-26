@@ -19,6 +19,10 @@ pub enum Action {
     Installed,
     Search,
     Theme,
+    Flatpak,
+    AppImages,
+    SearchFlatpak,
+    ReplaceAppImage,
     Prompt,
     CycleAvailability,
     RefreshInventory,
@@ -84,6 +88,8 @@ impl Bindings {
             match (pending, key.code) {
                 (Some(Prefix::Go), Char('g')) => return Some(First),
                 (Some(Prefix::Leader), Char('e')) => return Some(Installed),
+                (Some(Prefix::Leader), Char('p')) => return Some(Flatpak),
+                (Some(Prefix::Leader), Char('a')) => return Some(AppImages),
                 (Some(Prefix::Leader), Char('f')) => {
                     self.pending = Some((Prefix::Find, now + SEQUENCE_TIMEOUT));
                     return None;
@@ -133,6 +139,8 @@ impl Bindings {
             Char('R') => Some(RefreshInventory),
             Char('i') => Some(Install),
             Char('d') => Some(Remove),
+            Char('f') => Some(SearchFlatpak),
+            Char('e') => Some(ReplaceAppImage),
             Char('u') => Some(UpgradeSelected),
             Char('U') => Some(UpgradeExcept),
             Char('x') => Some(ToggleMark),

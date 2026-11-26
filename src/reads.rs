@@ -3,7 +3,16 @@ use std::{
     thread,
 };
 
-use crate::packages::{self, Inventory, SearchResult, SearchSource};
+use crate::{
+    appimage, flatpak, fonts,
+    packages::{self, Inventory, SearchResult, SearchSource},
+};
+
+const FONT_SLOT: usize = 3;
+const FLATPAK_INVENTORY_SLOT: usize = 4;
+const FLATPAK_SEARCH_SLOT: usize = 5;
+const IMAGE_INVENTORY_SLOT: usize = 6;
+const IMAGE_OPERATION_SLOT: usize = 7;
 
 pub const SEARCH_SOURCES: [SearchSource; 2] = [SearchSource::Repository, SearchSource::Aur];
 
@@ -18,6 +27,11 @@ pub fn search_index(source: SearchSource) -> usize {
 pub enum Request {
     Inventory(u64),
     Search(SearchSource, u64, String),
+    Fonts(u64),
+    FlatpakInventory(u64),
+    FlatpakSearch(u64, String),
+    ImageInventory(u64),
+    ImageOperation(appimage::Operation),
 }
 
 impl Request {
@@ -25,6 +39,11 @@ impl Request {
         match self {
             Self::Inventory(_) => 0,
             Self::Search(source, ..) => search_index(*source) + 1,
+            Self::Fonts(_) => FONT_SLOT,
+            Self::FlatpakInventory(_) => FLATPAK_INVENTORY_SLOT,
+            Self::FlatpakSearch(..) => FLATPAK_SEARCH_SLOT,
+            Self::ImageInventory(_) => IMAGE_INVENTORY_SLOT,
+            Self::ImageOperation(_) => IMAGE_OPERATION_SLOT,
         }
     }
 
@@ -34,6 +53,11 @@ impl Request {
             Self::Search(source, id, query) => {
                 Response::Search(source, id, packages::search(source, &query))
             }
+            Self::Fonts(id) => Response::Fonts(id, fonts::installed_families()),
+            Self::FlatpakInventory(id) => Response::FlatpakInventory(id, flatpak::installed()),
+            Self::FlatpakSearch(id, query) => Response::FlatpakSearch(id, flatpak::search(&query)),
+            Self::ImageInventory(id) => Response::ImageInventory(id, appimage::installed()),
+            Self::ImageOperation(operation) => Response::ImageOperation(operation.run()),
         }
     }
 
@@ -41,6 +65,11 @@ impl Request {
         match self {
             Self::Inventory(id) => Response::Inventory(id, Err(error)),
             Self::Search(source, id, _) => Response::Search(source, id, Err(error)),
+            Self::Fonts(id) => Response::Fonts(id, Err(error)),
+            Self::FlatpakInventory(id) => Response::FlatpakInventory(id, Err(error)),
+            Self::FlatpakSearch(id, _) => Response::FlatpakSearch(id, Err(error)),
+            Self::ImageInventory(id) => Response::ImageInventory(id, Err(error)),
+            Self::ImageOperation(_) => Response::ImageOperation(Err(error)),
         }
     }
 }
@@ -49,6 +78,11 @@ impl Request {
 pub enum Response {
     Inventory(u64, Result<Inventory, String>),
     Search(SearchSource, u64, Result<Vec<SearchResult>, String>),
+    Fonts(u64, Result<Vec<String>, String>),
+    FlatpakInventory(u64, Result<Vec<flatpak::InstalledApp>, String>),
+    FlatpakSearch(u64, Result<Vec<flatpak::SearchApp>, String>),
+    ImageInventory(u64, Result<Vec<appimage::Entry>, String>),
+    ImageOperation(Result<String, String>),
 }
 
 impl Response {
@@ -56,6 +90,11 @@ impl Response {
         match self {
             Self::Inventory(..) => 0,
             Self::Search(source, ..) => search_index(*source) + 1,
+            Self::Fonts(..) => FONT_SLOT,
+            Self::FlatpakInventory(..) => FLATPAK_INVENTORY_SLOT,
+            Self::FlatpakSearch(..) => FLATPAK_SEARCH_SLOT,
+            Self::ImageInventory(..) => IMAGE_INVENTORY_SLOT,
+            Self::ImageOperation(..) => IMAGE_OPERATION_SLOT,
         }
     }
 }
@@ -68,7 +107,7 @@ struct Slot {
 
 #[derive(Debug)]
 pub struct Reads {
-    slots: [Slot; 3],
+    slots: [Slot; IMAGE_OPERATION_SLOT + 1],
     sender: Sender<Response>,
     receiver: Receiver<Response>,
 }
@@ -103,9 +142,21 @@ impl Reads {
     }
 
     pub fn clear_queued_searches(&mut self) {
-        for slot in &mut self.slots[1..] {
+        for slot in &mut self.slots[1..=SEARCH_SOURCES.len()] {
             slot.queued = None;
         }
+    }
+
+    pub fn clear_flatpak_search(&mut self) {
+        self.slots[FLATPAK_SEARCH_SLOT].queued = None;
+    }
+
+    pub fn clear_flatpak_inventory(&mut self) {
+        self.slots[FLATPAK_INVENTORY_SLOT].queued = None;
+    }
+
+    pub fn clear_image_inventory(&mut self) {
+        self.slots[IMAGE_INVENTORY_SLOT].queued = None;
     }
 
     pub fn receive(&mut self) -> Option<Response> {

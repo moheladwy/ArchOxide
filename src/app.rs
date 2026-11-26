@@ -12,24 +12,38 @@ use crate::{
         self, Availability, InstalledPackage, Inventory, SearchResult, SearchSource, Source,
         Transaction,
     },
+    picker::{Choice, Kind as PickerKind, Outcome as PickerOutcome, Picker},
     reads::{Reads, Request, Response, SEARCH_SOURCES, search_index},
+    source_views::Sources,
 };
+
+mod source_actions;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {
     #[default]
     Installed,
     Search,
+    Flatpak,
+    AppImages,
     Settings,
 }
 
 impl View {
-    pub const ALL: [Self; 3] = [Self::Installed, Self::Search, Self::Settings];
+    pub const ALL: [Self; 5] = [
+        Self::Installed,
+        Self::Search,
+        Self::Flatpak,
+        Self::AppImages,
+        Self::Settings,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Self::Installed => "Installed",
             Self::Search => "Search",
+            Self::Flatpak => "Flatpak",
+            Self::AppImages => "AppImages",
             Self::Settings => "Settings",
         }
     }
@@ -47,18 +61,22 @@ pub enum Setting {
     FontFamily,
     FontSize,
     Aur,
+    Flatpak,
+    AppImages,
     Save,
     Reset,
 }
 
 impl Setting {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Theme,
         Self::Density,
         Self::DetailsWidth,
         Self::FontFamily,
         Self::FontSize,
         Self::Aur,
+        Self::Flatpak,
+        Self::AppImages,
         Self::Save,
         Self::Reset,
     ];
@@ -71,6 +89,8 @@ impl Setting {
             Self::FontFamily => "Font family",
             Self::FontSize => "Font size",
             Self::Aur => "AUR support",
+            Self::Flatpak => "Flatpak support",
+            Self::AppImages => "AppImages support",
             Self::Save => "Save settings",
             Self::Reset => "Reset to defaults",
         }
@@ -78,17 +98,25 @@ impl Setting {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Theme => "Enter cycles Dark, Light, and Terminal.",
+            Self::Theme => {
+                "Enter opens the theme picker. Highlight a theme to preview it, then Save to apply it."
+            }
             Self::Density => "Enter changes how much space each row uses.",
             Self::DetailsWidth => "Enter edits the details pane width (25–60 percent).",
             Self::FontFamily => {
-                "Enter edits the monospace font family for the next --kitty launch. Blank inherits Kitty's setting."
+                "Enter opens the installed font picker. Saved fonts apply on the next --kitty launch."
             }
             Self::FontSize => {
                 "Enter edits the font size in points for the next --kitty launch (6–48). Blank inherits Kitty's setting."
             }
             Self::Aur => {
                 "Enter toggles AUR search, installs, and upgrades. AUR support requires yay."
+            }
+            Self::Flatpak => {
+                "Enter toggles the Flatpak view and operations. Save to apply the change."
+            }
+            Self::AppImages => {
+                "Enter toggles the AppImages view and operations. Save to apply the change."
             }
             Self::Save => "Enter saves your settings and applies changes to the TUI.",
             Self::Reset => "Enter loads the defaults for review. Save to apply them.",
@@ -116,6 +144,11 @@ pub enum ReadState {
 enum Field {
     Filter,
     Search,
+    FlatpakFilter,
+    FlatpakSearch,
+    ImageFilter,
+    ImageImport,
+    ImageReplace,
     Setting(Setting),
 }
 
@@ -128,7 +161,7 @@ struct Draft {
 #[derive(Debug, Default)]
 pub struct App {
     pub view: View,
-    selections: [ListState; 3],
+    selections: [ListState; View::ALL.len()],
     pub focus: Pane,
     pub bindings: Bindings,
     pub show_help: bool,
@@ -139,6 +172,8 @@ pub struct App {
     pub confirmation_scroll: u16,
     transaction: Option<Transaction>,
     pub config: Config,
+    pub picker: Option<Picker>,
+    pub sources: Sources,
     config_path: Option<PathBuf>,
     settings: Config,
     pub installed_state: ReadState,
@@ -159,6 +194,7 @@ pub struct App {
     reads: Reads,
     inventory_id: u64,
     search_id: u64,
+    font_id: u64,
 }
 
 impl App {
@@ -193,8 +229,12 @@ impl App {
         self.transaction.take()
     }
 
-    pub fn transaction_finished(&mut self, message: String) {
+    pub fn transaction_finished(&mut self, message: String, transaction: &Transaction) {
         self.notice = Some(message);
+        if matches!(transaction, Transaction::Flatpak(_)) {
+            self.refresh_flatpak_inventory();
+            return;
+        }
         self.refresh_inventory();
         if self.view == View::Search {
             self.refresh_search();
@@ -258,8 +298,30 @@ impl App {
         self.config.packages.aur_enabled && self.yay_available
     }
 
+    pub fn views(&self) -> impl Iterator<Item = View> + '_ {
+        View::ALL
+            .into_iter()
+            .filter(|&view| self.view_enabled(view))
+    }
+
+    fn view_enabled(&self, view: View) -> bool {
+        match view {
+            View::Flatpak => self.config.packages.flatpak_enabled,
+            View::AppImages => self.config.packages.appimage_enabled,
+            _ => true,
+        }
+    }
+
     pub fn settings_dirty(&self) -> bool {
         self.config != self.settings
+    }
+
+    pub fn rendered_theme(&self) -> Theme {
+        if let Some(Choice::Theme(theme)) = self.picker.as_ref().and_then(Picker::selected) {
+            *theme
+        } else {
+            self.config.appearance.theme
+        }
     }
 
     pub fn setting_value(&self, setting: Setting) -> String {
@@ -275,12 +337,9 @@ impl App {
             Setting::FontSize => appearance
                 .font_size_pt
                 .map_or_else(|| "Inherit".into(), |size| format!("{size} pt")),
-            Setting::Aur => if self.settings.packages.aur_enabled {
-                "On"
-            } else {
-                "Off"
-            }
-            .into(),
+            Setting::Aur => switch_label(self.settings.packages.aur_enabled),
+            Setting::Flatpak => switch_label(self.settings.packages.flatpak_enabled),
+            Setting::AppImages => switch_label(self.settings.packages.appimage_enabled),
             Setting::Save | Setting::Reset => String::new(),
         }
     }
@@ -290,6 +349,11 @@ impl App {
             let title = match draft.field {
                 Field::Filter => "Filter installed",
                 Field::Search => "Search packages",
+                Field::FlatpakFilter => "Filter installed Flatpaks",
+                Field::FlatpakSearch => "Search Flatpak remotes",
+                Field::ImageFilter => "Filter managed AppImages",
+                Field::ImageImport => "Import AppImage from a path or HTTPS URL",
+                Field::ImageReplace => "Replace AppImage from a path or HTTPS URL",
                 Field::Setting(Setting::DetailsWidth) => "Details width (%)",
                 Field::Setting(Setting::FontSize) => "Font size (pt)",
                 Field::Setting(setting) => setting.label(),
@@ -299,6 +363,11 @@ impl App {
         match self.view {
             View::Installed => Some(("Filter installed", &self.filter)),
             View::Search => Some(("Search packages", &self.query)),
+            View::Flatpak => match &self.sources.flatpak_query {
+                Some(query) => Some(("Search Flatpak remotes", query)),
+                None => Some(("Filter installed Flatpaks", &self.sources.flatpaks.filter)),
+            },
+            View::AppImages => Some(("Filter managed AppImages", &self.sources.images.filter)),
             View::Settings => None,
         }
     }
@@ -321,7 +390,21 @@ impl App {
             return;
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
-            self.should_quit = true;
+            self.request_quit();
+            return;
+        }
+        if let Some(picker) = &mut self.picker {
+            match picker.handle_key(key) {
+                Some(PickerOutcome::Choose(choice)) => {
+                    match choice {
+                        Choice::Theme(theme) => self.settings.appearance.theme = theme,
+                        Choice::Font(family) => self.settings.appearance.font_family = family,
+                    }
+                    self.picker = None;
+                }
+                Some(PickerOutcome::Close) => self.picker = None,
+                None => {}
+            }
             return;
         }
         if self.show_help {
@@ -347,7 +430,12 @@ impl App {
                         self.confirmation_scroll = 0;
                     }
                     KeyCode::Enter if key.kind == KeyEventKind::Press => {
-                        self.transaction = self.confirmation.take();
+                        match self.confirmation.take() {
+                            Some(Transaction::AppImage(operation)) => {
+                                self.start_image_operation(operation)
+                            }
+                            transaction => self.transaction = transaction,
+                        }
                         self.confirmation_scroll = 0;
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
@@ -367,6 +455,10 @@ impl App {
         }
         if key.code == KeyCode::Esc && self.bindings.pending_label().is_none() {
             self.notice = None;
+            if self.view == View::Flatpak && self.sources.flatpak_query.is_some() {
+                self.leave_flatpak_search();
+                return;
+            }
         }
         if let Some(action) = self.bindings.resolve(key, now)
             && (action != Action::ToggleMark || key.kind == KeyEventKind::Press)
@@ -410,6 +502,12 @@ impl App {
                         self.query = draft.text.trim().to_owned();
                         self.refresh_search();
                     }
+                    Field::FlatpakFilter => self.sources.flatpaks.filter = draft.text,
+                    Field::FlatpakSearch => self.search_flatpaks(draft.text),
+                    Field::ImageFilter => self.sources.images.filter = draft.text,
+                    Field::ImageImport | Field::ImageReplace => {
+                        self.confirm_image_source(draft.field, draft.text)
+                    }
                     Field::Setting(setting) => self.set_from_text(setting, draft.text),
                 }
                 return;
@@ -428,7 +526,7 @@ impl App {
 
     fn apply_action(&mut self, action: Action) {
         match action {
-            Action::Quit => self.should_quit = true,
+            Action::Quit => self.request_quit(),
             Action::Help => {
                 self.show_help = true;
                 self.help_scroll = 0;
@@ -436,6 +534,8 @@ impl App {
             Action::NextView => self.cycle_view(1),
             Action::PreviousView => self.cycle_view(View::ALL.len() - 1),
             Action::Installed => self.open(View::Installed),
+            Action::Flatpak => self.open(View::Flatpak),
+            Action::AppImages => self.open(View::AppImages),
             Action::Search => {
                 self.open(View::Search);
                 self.open_prompt();
@@ -457,7 +557,7 @@ impl App {
             {
                 self.confirmation = self.selected_installed().cloned().map(Transaction::Remove);
             }
-            Action::Upgrade => {
+            Action::Upgrade if !matches!(self.view, View::Flatpak | View::AppImages) => {
                 self.confirmation = Some(Transaction::Upgrade {
                     aur: self.aur_enabled(),
                 })
@@ -481,15 +581,26 @@ impl App {
             }
             Action::SaveSettings if self.view == View::Settings => self.save_settings(),
             Action::ResetSettings if self.view == View::Settings => self.reset_settings(),
-            _ if self.focus == Pane::List => self.navigate(action, self.row_count(self.view)),
-            _ => {}
+            _ => {
+                if !self.apply_source_action(action) && self.focus == Pane::List {
+                    self.navigate(action, self.row_count(self.view));
+                }
+            }
         }
     }
 
     fn open(&mut self, view: View) {
+        if !self.view_enabled(view) {
+            self.notice = Some(format!(
+                "{} support is off. Enable it in Settings.",
+                view.title()
+            ));
+            return;
+        }
         self.view = view;
         self.focus = Pane::List;
         self.clamp_selection(view);
+        self.open_source(view);
         if view == View::Search
             && !self.query.is_empty()
             && self.search_states[0] == ReadState::Idle
@@ -550,13 +661,26 @@ impl App {
     }
 
     fn cycle_view(&mut self, step: usize) {
-        self.open(View::ALL[(self.view.index() + step) % View::ALL.len()]);
+        let mut index = self.view.index();
+        loop {
+            index = (index + step) % View::ALL.len();
+            let view = View::ALL[index];
+            if self.view_enabled(view) {
+                self.open(view);
+                break;
+            }
+        }
     }
 
     fn open_prompt(&mut self) {
         let (field, text) = match self.view {
             View::Installed => (Field::Filter, self.filter.clone()),
             View::Search => (Field::Search, self.query.clone()),
+            View::Flatpak => match &self.sources.flatpak_query {
+                Some(query) => (Field::FlatpakSearch, query.clone()),
+                None => (Field::FlatpakFilter, self.sources.flatpaks.filter.clone()),
+            },
+            View::AppImages => (Field::ImageFilter, self.sources.images.filter.clone()),
             View::Settings => return,
         };
         self.draft = Some(Draft { field, text });
@@ -567,6 +691,11 @@ impl App {
         match view {
             View::Installed => self.visible_installed.len(),
             View::Search => self.search_results.iter().map(Vec::len).sum(),
+            View::Flatpak if self.sources.flatpak_query.is_some() => {
+                self.sources.flatpak_results.len()
+            }
+            View::Flatpak => self.flatpak_rows().count(),
+            View::AppImages => self.image_rows().count(),
             View::Settings => Setting::ALL.len(),
         }
     }
@@ -738,7 +867,19 @@ impl App {
                 self.clamp_selection(View::Search);
                 true
             }
-            _ => false,
+            Response::Fonts(id, result) if id == self.font_id => {
+                if let Some(picker) = self
+                    .picker
+                    .as_mut()
+                    .filter(|picker| picker.kind == PickerKind::Font)
+                {
+                    picker.load_fonts(result, self.settings.appearance.font_family.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+            response => self.apply_source_read(response),
         }
     }
 
@@ -746,11 +887,13 @@ impl App {
         let appearance = &mut self.settings.appearance;
         let text = match setting {
             Setting::Theme => {
-                appearance.theme = match appearance.theme {
-                    Theme::Dark => Theme::Light,
-                    Theme::Light => Theme::Terminal,
-                    Theme::Terminal => Theme::Dark,
-                };
+                self.picker = Some(Picker::themes(appearance.theme));
+                return;
+            }
+            Setting::FontFamily => {
+                self.picker = Some(Picker::fonts());
+                self.font_id = self.font_id.wrapping_add(1);
+                self.reads.submit(Request::Fonts(self.font_id));
                 return;
             }
             Setting::Density => {
@@ -764,10 +907,17 @@ impl App {
                 self.settings.packages.aur_enabled = !self.settings.packages.aur_enabled;
                 return;
             }
+            Setting::Flatpak => {
+                self.settings.packages.flatpak_enabled = !self.settings.packages.flatpak_enabled;
+                return;
+            }
+            Setting::AppImages => {
+                self.settings.packages.appimage_enabled = !self.settings.packages.appimage_enabled;
+                return;
+            }
             Setting::Save => return self.save_settings(),
             Setting::Reset => return self.reset_settings(),
             Setting::DetailsWidth => appearance.details_width_percent.to_string(),
-            Setting::FontFamily => appearance.font_family.clone().unwrap_or_default(),
             Setting::FontSize => appearance
                 .font_size_pt
                 .map(|size| size.to_string())
@@ -791,9 +941,6 @@ impl App {
                     self.notice = Some("Details width must be an integer between 25 and 60.".into())
                 }
             },
-            Setting::FontFamily => {
-                self.settings.appearance.font_family = (!text.is_empty()).then(|| text.to_owned());
-            }
             Setting::FontSize if text.is_empty() => self.settings.appearance.font_size_pt = None,
             Setting::FontSize => match text.parse::<f64>() {
                 Ok(size) if (6.0..=48.0).contains(&size) => {
@@ -820,10 +967,23 @@ impl App {
         }
 
         let refresh_aur = self.config.packages.aur_enabled != self.settings.packages.aur_enabled;
+        let disable_flatpak =
+            self.config.packages.flatpak_enabled && !self.settings.packages.flatpak_enabled;
+        let disable_images =
+            self.config.packages.appimage_enabled && !self.settings.packages.appimage_enabled;
         let font_changed = self.config.appearance.font_family
             != self.settings.appearance.font_family
             || self.config.appearance.font_size_pt != self.settings.appearance.font_size_pt;
         self.config = self.settings.clone();
+        if disable_flatpak {
+            self.leave_flatpak_search();
+            self.sources.flatpaks.invalidate();
+            self.reads.clear_flatpak_inventory();
+        }
+        if disable_images {
+            self.sources.images.invalidate();
+            self.reads.clear_image_inventory();
+        }
         self.notice = Some(
             if font_changed {
                 "Settings saved. Font changes apply on the next --kitty launch."
@@ -842,6 +1002,10 @@ impl App {
         self.settings = Config::default();
         self.notice = Some("Defaults loaded. Save to apply them.".into());
     }
+}
+
+fn switch_label(enabled: bool) -> String {
+    if enabled { "On" } else { "Off" }.into()
 }
 
 #[cfg(test)]
@@ -1155,6 +1319,9 @@ mod tests {
 
         press(&mut app, " ft", now);
         app.handle_key(KeyEvent::from(KeyCode::Enter), now);
+        press(&mut app, "j", now);
+        assert_eq!(app.rendered_theme(), Theme::Light);
+        app.handle_key(KeyEvent::from(KeyCode::Enter), now);
         assert_eq!(app.setting_value(Setting::Theme), "Light");
         assert_eq!(app.config.appearance.theme, Theme::Dark);
         assert!(!path.exists());
@@ -1165,5 +1332,82 @@ mod tests {
         press(&mut app, "r", now);
         assert_eq!(app.setting_value(Setting::Theme), "Dark");
         assert_eq!(Config::load(&path).unwrap().appearance.theme, Theme::Light);
+    }
+
+    #[test]
+    fn searchable_font_picker_saves_a_family_from_discovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut app = App::new(Config::default(), Some(path.clone()), None);
+        app.view = View::Settings;
+        app.picker = Some(Picker::fonts());
+        assert!(app.apply_read(Response::Fonts(
+            0,
+            Ok(vec!["Adwaita Sans".into(), "DejaVu Sans Mono".into()])
+        )));
+        let now = Instant::now();
+
+        press(&mut app, "/dejavu", now);
+        app.handle_key(KeyEvent::from(KeyCode::Enter), now);
+        assert_eq!(app.setting_value(Setting::FontFamily), "DejaVu Sans Mono");
+        assert!(app.config.appearance.font_family.is_none());
+        press(&mut app, "s", now);
+        assert_eq!(
+            Config::load(&path)
+                .unwrap()
+                .appearance
+                .font_family
+                .as_deref(),
+            Some("DejaVu Sans Mono")
+        );
+    }
+
+    #[test]
+    fn disabled_sources_are_persisted_and_skipped_by_navigation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut app = App::new(Config::default(), Some(path.clone()), None);
+        let now = Instant::now();
+
+        press(&mut app, " ftjjjjjj", now);
+        assert_eq!(app.selected_setting(), Some(Setting::Flatpak));
+        app.handle_key(KeyEvent::from(KeyCode::Enter), now);
+        press(&mut app, "j", now);
+        assert_eq!(app.selected_setting(), Some(Setting::AppImages));
+        app.handle_key(KeyEvent::from(KeyCode::Enter), now);
+        assert_eq!(app.setting_value(Setting::Flatpak), "Off");
+        assert_eq!(app.setting_value(Setting::AppImages), "Off");
+        assert!(app.views().any(|view| view == View::Flatpak));
+
+        app.sources.image_busy = true;
+        press(&mut app, "s", now);
+        let loaded = Config::load(&path).unwrap();
+        assert!(!loaded.packages.flatpak_enabled);
+        assert!(!loaded.packages.appimage_enabled);
+        assert!(loaded.packages.aur_enabled);
+        assert_eq!(
+            app.views().collect::<Vec<_>>(),
+            [View::Installed, View::Search, View::Settings]
+        );
+        assert!(!app.apply_read(Response::FlatpakInventory(0, Ok(Vec::new()))));
+        assert!(!app.apply_read(Response::ImageInventory(0, Ok(Vec::new()))));
+        assert!(app.apply_read(Response::ImageOperation(Ok("Done".into()))));
+        assert!(!app.has_pending_reads());
+
+        press(&mut app, " p a", now);
+        assert_eq!(app.view, View::Settings);
+        assert!(
+            app.notice
+                .as_deref()
+                .unwrap()
+                .contains("AppImages support is off")
+        );
+        app.handle_key(KeyEvent::from(KeyCode::BackTab), now);
+        assert_eq!(app.view, View::Search);
+        app.handle_key(KeyEvent::from(KeyCode::Tab), now);
+        assert_eq!(app.view, View::Settings);
+
+        press(&mut app, "rs", now);
+        assert_eq!(app.views().collect::<Vec<_>>(), View::ALL);
     }
 }

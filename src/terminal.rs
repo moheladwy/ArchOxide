@@ -97,10 +97,14 @@ fn run_transaction(
     transaction: Transaction,
     original_mode: &libc::termios,
 ) -> io::Result<()> {
-    let mut command = match transaction.command() {
-        Ok(command) => command,
+    let commands = match transaction.commands() {
+        Ok(commands) if commands.is_empty() => {
+            app.transaction_finished("No applications to update".into(), &transaction);
+            return Ok(());
+        }
+        Ok(commands) => commands,
         Err(message) => {
-            app.transaction_finished(message);
+            app.transaction_finished(message, &transaction);
             return Ok(());
         }
     };
@@ -112,17 +116,20 @@ fn run_transaction(
     {
         Ok(handlers) => handlers,
         Err(error) => {
-            app.transaction_finished(format!("Could not prepare the terminal handoff ({error})"));
+            app.transaction_finished(
+                format!("Could not prepare the terminal handoff ({error})"),
+                &transaction,
+            );
             return Ok(());
         }
     };
 
     let outcome = match restore_terminal() {
-        Ok(()) => command_outcome(&mut command),
+        Ok(()) => run_commands(commands, original_mode),
         Err(error) => format!("Could not hand off the terminal ({error})"),
     };
     let resumed = resume_terminal(terminal, original_mode);
-    app.transaction_finished(outcome);
+    app.transaction_finished(outcome, &transaction);
     resumed
 }
 
@@ -138,7 +145,29 @@ fn resume_terminal(
     terminal.resize(terminal.size()?.into())
 }
 
-fn command_outcome(command: &mut Command) -> String {
+fn run_commands(commands: Vec<Command>, original_mode: &libc::termios) -> String {
+    let total = commands.len();
+    let mut success = String::new();
+    for (index, mut command) in commands.into_iter().enumerate() {
+        let result = apply_terminal_mode(original_mode)
+            .map_err(|error| format!("Could not set terminal mode ({error})"))
+            .and_then(|()| command_outcome(&mut command));
+        match result {
+            Ok(message) => success = message,
+            Err(error) if index > 0 => {
+                return format!("Completed {index} of {total} commands. {error}");
+            }
+            Err(error) => return error,
+        }
+    }
+    if total > 1 {
+        format!("All {total} commands completed successfully")
+    } else {
+        success
+    }
+}
+
+fn command_outcome(command: &mut Command) -> Result<String, String> {
     let program = command.get_program().to_string_lossy().into_owned();
     let mut child = match command
         .stdin(Stdio::inherit())
@@ -148,15 +177,19 @@ fn command_outcome(command: &mut Command) -> String {
     {
         Ok(child) => child,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return format!("Could not start {program} because its executable was not found");
+            return Err(format!(
+                "Could not start {program} because its executable was not found"
+            ));
         }
-        Err(error) => return format!("Could not start {program} ({error})"),
+        Err(error) => return Err(format!("Could not start {program} ({error})")),
     };
     match child.wait() {
-        Ok(status) if status.success() => format!("{program} completed successfully"),
-        Ok(status) if status.signal() == Some(libc::SIGINT) => format!("{program} was interrupted"),
-        Ok(status) => format!("{program} failed ({status})"),
-        Err(error) => format!("Could not wait for {program} ({error})"),
+        Ok(status) if status.success() => Ok(format!("{program} completed successfully")),
+        Ok(status) if status.signal() == Some(libc::SIGINT) => {
+            Err(format!("{program} was interrupted"))
+        }
+        Ok(status) => Err(format!("{program} failed ({status})")),
+        Err(error) => Err(format!("Could not wait for {program} ({error})")),
     }
 }
 
@@ -220,18 +253,31 @@ mod tests {
     fn reports_foreground_command_outcomes() {
         let mut success = Command::new("sh");
         success.args(["-c", "exit 0"]);
-        assert_eq!(command_outcome(&mut success), "sh completed successfully");
+        assert_eq!(
+            command_outcome(&mut success),
+            Ok("sh completed successfully".into())
+        );
 
         let mut failure = Command::new("sh");
         failure.args(["-c", "exit 7"]);
-        assert_eq!(command_outcome(&mut failure), "sh failed (exit status: 7)");
+        assert_eq!(
+            command_outcome(&mut failure),
+            Err("sh failed (exit status: 7)".into())
+        );
 
         let mut interrupt = Command::new("sh");
         interrupt.args(["-c", "kill -INT $$"]);
-        assert_eq!(command_outcome(&mut interrupt), "sh was interrupted");
+        assert_eq!(
+            command_outcome(&mut interrupt),
+            Err("sh was interrupted".into())
+        );
 
         let directory = tempfile::tempdir().unwrap();
         let mut missing = Command::new(directory.path().join("missing-command"));
-        assert!(command_outcome(&mut missing).contains("executable was not found"));
+        assert!(
+            command_outcome(&mut missing)
+                .unwrap_err()
+                .contains("executable was not found")
+        );
     }
 }

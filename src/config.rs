@@ -8,6 +8,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
+use crate::fonts;
+pub use crate::themes::Theme;
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -41,25 +44,6 @@ impl Default for Appearance {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Theme {
-    #[default]
-    Dark,
-    Light,
-    Terminal,
-}
-
-impl Theme {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Dark => "Dark",
-            Self::Light => "Light",
-            Self::Terminal => "Terminal",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
 pub enum Density {
     Compact,
     #[default]
@@ -79,11 +63,17 @@ impl Density {
 #[serde(default, deny_unknown_fields)]
 pub struct PackageSettings {
     pub aur_enabled: bool,
+    pub flatpak_enabled: bool,
+    pub appimage_enabled: bool,
 }
 
 impl Default for PackageSettings {
     fn default() -> Self {
-        Self { aur_enabled: true }
+        Self {
+            aur_enabled: true,
+            flatpak_enabled: true,
+            appimage_enabled: true,
+        }
     }
 }
 
@@ -170,10 +160,7 @@ impl Config {
             return Err("Details pane width must be between 25% and 60%".to_owned());
         }
         if let Some(family) = &self.appearance.font_family
-            && (family.trim().is_empty()
-                || family.chars().any(|character| {
-                    character.is_control() || matches!(character, '\u{2028}' | '\u{2029}')
-                }))
+            && !fonts::is_valid_family(family)
         {
             return Err("Font family must contain a printable, single-line name".to_owned());
         }
@@ -231,6 +218,8 @@ mod tests {
         assert_eq!(config.appearance.font_family, None);
         assert_eq!(config.appearance.font_size_pt, None);
         assert!(config.packages.aur_enabled);
+        assert!(config.packages.flatpak_enabled);
+        assert!(config.packages.appimage_enabled);
         assert!(!path.exists());
     }
 
@@ -287,7 +276,11 @@ mod tests {
                 font_family: Some("Iosevka Term".to_owned()),
                 font_size_pt: Some(6.0),
             },
-            packages: PackageSettings { aur_enabled: false },
+            packages: PackageSettings {
+                aur_enabled: false,
+                flatpak_enabled: false,
+                appimage_enabled: false,
+            },
         };
         config.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), config);

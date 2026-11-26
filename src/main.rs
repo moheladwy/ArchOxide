@@ -1,9 +1,15 @@
 mod app;
+mod appimage;
 mod config;
+mod flatpak;
+mod fonts;
 mod input;
 mod packages;
+mod picker;
 mod reads;
+mod source_views;
 mod terminal;
+mod themes;
 mod ui;
 
 use std::process::ExitCode;

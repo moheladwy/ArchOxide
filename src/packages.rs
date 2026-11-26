@@ -6,6 +6,8 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
+use crate::{appimage, flatpak};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Availability {
     Repository,
@@ -141,10 +143,19 @@ pub enum Transaction {
     Upgrade { aur: bool },
     UpgradeSelected { aur: bool, names: Vec<String> },
     UpgradeExcept { aur: bool, names: Vec<String> },
+    Flatpak(flatpak::Operation),
+    AppImage(appimage::Operation),
 }
 
 impl Transaction {
-    pub fn command(&self) -> Result<Command, String> {
+    pub fn commands(&self) -> Result<Vec<Command>, String> {
+        match self {
+            Self::Flatpak(operation) => operation.commands(),
+            _ => self.native_command().map(|command| vec![command]),
+        }
+    }
+
+    fn native_command(&self) -> Result<Command, String> {
         let mut command;
         match self {
             Self::Install(package) => {
@@ -181,6 +192,9 @@ impl Transaction {
             Self::UpgradeExcept { aur, names } => {
                 require_selection(names)?;
                 return upgrade_command(*aur, true, names.iter().map(String::as_str));
+            }
+            Self::Flatpak(_) | Self::AppImage(_) => {
+                return Err("Expected a native package operation".into());
             }
         }
         Ok(command)
@@ -475,7 +489,7 @@ mod tests {
                 aur,
                 names: vec!["alpha".into(), "beta".into()],
             }
-            .command()
+            .native_command()
             .unwrap();
             let args: Vec<_> = command.get_args().collect();
             let expected = if aur {
@@ -488,7 +502,7 @@ mod tests {
         for names in [vec![], vec!["alpha,beta".into()], vec!["--nodeps".into()]] {
             assert!(
                 Transaction::UpgradeExcept { aur: false, names }
-                    .command()
+                    .native_command()
                     .is_err()
             );
         }
@@ -667,7 +681,7 @@ mod tests {
         ];
 
         for (transaction, program, args) in cases {
-            let command = transaction.command().unwrap();
+            let command = transaction.native_command().unwrap();
             assert_eq!(command.get_program(), program);
             assert!(command.get_args().eq(args.iter().copied()));
             assert_eq!(command.get_envs().count(), 0);
@@ -682,7 +696,7 @@ mod tests {
                 version: "1.0-1".into(),
                 availability: Availability::Unknown,
             };
-            assert!(Transaction::Remove(package).command().is_err());
+            assert!(Transaction::Remove(package).native_command().is_err());
         }
         for repository in ["", "..", "extra/demo", "extra\x1b"] {
             let package = SearchResult {
@@ -691,7 +705,7 @@ mod tests {
                 source: Source::Repository(repository.into()),
                 description: String::new(),
             };
-            assert!(Transaction::Install(package).command().is_err());
+            assert!(Transaction::Install(package).native_command().is_err());
         }
     }
 }
