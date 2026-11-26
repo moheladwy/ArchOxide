@@ -57,6 +57,10 @@ pub fn search(query: &str) -> Result<Vec<SearchResult>, String> {
     }
 
     let entries = installed()?;
+    search_entries(query, &entries)
+}
+
+fn search_entries(query: &str, entries: &[Entry]) -> Result<Vec<SearchResult>, String> {
     let needle = query.to_lowercase();
     let mut results: Vec<_> = entries
         .iter()
@@ -86,27 +90,38 @@ pub fn search(query: &str) -> Result<Vec<SearchResult>, String> {
     let is_file =
         needle.ends_with(".appimage") && (query.contains('/') || Path::new(query).is_file());
     if is_https || is_file {
-        let source = Source::parse(query)?;
-        if let Source::Local(path) = &source
-            && !path.is_file()
-        {
-            return Err("The AppImage source must be a regular file".into());
-        }
-        let origin = source.origin()?;
-        let already_managed = entries.iter().any(|entry| {
-            entry.origin.as_deref() == Some(origin.as_str())
-                || entry.path.to_str() == Some(origin.as_str())
-        });
-        if !already_managed {
-            results.push(SearchResult {
-                name: source.name()?,
-                version: String::new(),
-                source: PackageSource::AppImageImport(origin.clone()),
-                description: origin,
-            });
+        match import_candidate(query, entries) {
+            Ok(Some(candidate)) => results.push(candidate),
+            Ok(None) => {}
+            Err(error) if results.is_empty() => return Err(error),
+            // An invalid or missing import source must not hide installed matches.
+            Err(_) => {}
         }
     }
     Ok(results)
+}
+
+fn import_candidate(query: &str, entries: &[Entry]) -> Result<Option<SearchResult>, String> {
+    let source = Source::parse(query)?;
+    if let Source::Local(path) = &source
+        && !path.is_file()
+    {
+        return Err("The AppImage source must be a regular file".into());
+    }
+    let origin = source.origin()?;
+    let already_managed = entries.iter().any(|entry| {
+        entry.origin.as_deref() == Some(origin.as_str())
+            || entry.path.to_str() == Some(origin.as_str())
+    });
+    if already_managed {
+        return Ok(None);
+    }
+    Ok(Some(SearchResult {
+        name: source.name()?,
+        version: String::new(),
+        source: PackageSource::AppImageImport(origin.clone()),
+        description: origin,
+    }))
 }
 
 impl Operation {
