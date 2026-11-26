@@ -100,6 +100,31 @@ impl From<flatpak::SearchApp> for SearchResult {
 }
 
 impl SearchResult {
+    pub fn match_rank(&self, query: &str) -> u8 {
+        let rank = |name: &str| {
+            let name = name.to_lowercase();
+            if name == query {
+                0
+            } else if name.starts_with(query) {
+                1
+            } else if name.contains(query) {
+                2
+            } else {
+                3
+            }
+        };
+        let identifier = match &self.source {
+            Source::Flatpak { reference, .. } => {
+                flatpak::app_identity(reference).ok().map(|(id, _)| id)
+            }
+            Source::AppImageImport(input) => Some(input.as_str()),
+            Source::ManagedAppImage(path) => path.to_str(),
+            Source::Repository(_) | Source::Aur => None,
+        };
+        let name_rank = rank(&self.name);
+        identifier.map_or(name_rank, |id| name_rank.min(rank(id)))
+    }
+
     pub fn install_transaction(&self) -> Result<Transaction, String> {
         match &self.source {
             Source::Repository(_) | Source::Aur => Ok(Transaction::Install(self.clone())),
@@ -193,6 +218,7 @@ pub fn search(source: SearchSource, query: &str) -> Result<Vec<SearchResult>, St
                 "-Ssa",
                 "--color",
                 "never",
+                "--topdown",
                 "--doublelineresults",
                 "--",
                 query,

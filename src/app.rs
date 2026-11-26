@@ -194,6 +194,7 @@ pub struct App {
     pub query: String,
     pub yay_available: bool,
     search_results: [Vec<SearchResult>; SEARCH_SOURCES.len()],
+    search_order: Vec<(usize, usize)>,
     pub search_states: [ReadState; SEARCH_SOURCES.len()],
     search_selection: Option<(Source, String)>,
     draft: Option<Draft>,
@@ -270,7 +271,9 @@ impl App {
     }
 
     pub fn search_rows(&self) -> impl Iterator<Item = &SearchResult> + '_ {
-        self.search_results.iter().flatten()
+        self.search_order
+            .iter()
+            .map(|&(source, row)| &self.search_results[source][row])
     }
 
     pub fn selected_installed(&self) -> Option<&InstalledPackage> {
@@ -514,6 +517,7 @@ impl App {
                     }
                     Field::Search => {
                         self.query = draft.text.trim().to_owned();
+                        self.search_selection = None;
                         self.refresh_search();
                     }
                     Field::FlatpakFilter => self.sources.flatpaks.filter = draft.text,
@@ -719,7 +723,7 @@ impl App {
     fn row_count(&self, view: View) -> usize {
         match view {
             View::Installed => self.visible_installed.len(),
-            View::Search => self.search_results.iter().map(Vec::len).sum(),
+            View::Search => self.search_order.len(),
             View::Flatpak if self.sources.flatpak_query.is_some() => {
                 self.sources.flatpak_results.len()
             }
@@ -755,7 +759,9 @@ impl App {
         };
         selection.select(Some(next.min(last)));
         if self.view == View::Search {
-            self.search_selection = None;
+            self.search_selection = self
+                .selected_result()
+                .map(|package| (package.source.clone(), package.name.clone()));
         }
     }
 
@@ -816,14 +822,12 @@ impl App {
         self.search_id = self.search_id.wrapping_add(1);
         self.reads.clear_queued_searches();
         self.search_results = Default::default();
+        self.search_order.clear();
         self.search_states = Default::default();
         self.selections[View::Search.index()].select(None);
     }
 
     fn refresh_search(&mut self) {
-        if let Some(package) = self.selected_result() {
-            self.search_selection = Some((package.source.clone(), package.name.clone()));
-        }
         self.invalidate_search();
         if self.query.is_empty() {
             self.search_selection = None;
@@ -876,9 +880,6 @@ impl App {
             }
             Response::Search(source, id, result) if id == self.search_id => {
                 let slot = search_index(source);
-                let selected = self
-                    .selected_result()
-                    .map(|package| (package.source.clone(), package.name.clone()));
                 match result {
                     Ok(packages) => {
                         self.search_results[slot] = packages;
@@ -890,13 +891,24 @@ impl App {
                     }
                 }
 
-                let position = |(source, name): &(Source, String)| {
+                let query = self.query.to_lowercase();
+                let mut order: Vec<_> = self
+                    .search_results
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(source, rows)| (0..rows.len()).map(move |row| (source, row)))
+                    .collect();
+                // Stable sorting keeps source and backend order for equally relevant matches.
+                order.sort_by_cached_key(|&(source, row)| {
+                    self.search_results[source][row].match_rank(&query)
+                });
+                self.search_order = order;
+
+                let retained = self.search_selection.as_ref().and_then(|(source, name)| {
                     self.search_rows()
                         .position(|package| &package.source == source && &package.name == name)
-                };
-                let preferred = self.search_selection.as_ref().and_then(position);
-                let retained = preferred.or_else(|| selected.as_ref().and_then(position));
-                if preferred.is_some() || !self.search_states.contains(&ReadState::Loading) {
+                });
+                if retained.is_none() && !self.search_states.contains(&ReadState::Loading) {
                     self.search_selection = None;
                 }
                 self.selections[View::Search.index()].select(retained);
