@@ -388,6 +388,19 @@ fn read(program: &str, args: &[&str]) -> Result<Output, String> {
         })
 }
 
+pub fn read_info(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = read(program, args)?;
+    let operation = format!("{program} {}", args[0]);
+    if !output.status.success() || (output.stdout.is_empty() && !output.stderr.is_empty()) {
+        return Err(read_error(&operation, &output));
+    }
+    let info = String::from_utf8_lossy(&output.stdout);
+    if info.trim().is_empty() {
+        return Err(format!("{operation} returned no package information"));
+    }
+    Ok(info.into_owned())
+}
+
 fn pacman_stdout<'a>(
     output: &'a Output,
     invocation: &str,

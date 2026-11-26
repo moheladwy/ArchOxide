@@ -22,7 +22,7 @@ fn render(app: &mut App, width: u16, height: u16) -> String {
 }
 
 #[test]
-fn details_pane_appears_only_when_it_fits() {
+fn split_details_pane_appears_only_when_it_fits() {
     let mut app = App::default();
     let wide = render(&mut app, 100, 24);
     assert!(wide.contains("ArchOxide"));
@@ -32,7 +32,8 @@ fn details_pane_appears_only_when_it_fits() {
     let narrow = render(&mut app, 40, 14);
     assert!(narrow.contains("Packages"));
     assert!(narrow.contains("? Help"));
-    assert!(!narrow.contains("Details"));
+    assert!(narrow.contains("l Details"));
+    assert!(!narrow.contains("┌ Details "));
 
     let tiny = render(&mut app, 12, 2);
     assert!(tiny.contains("ArchOxide"));

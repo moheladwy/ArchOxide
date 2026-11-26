@@ -79,6 +79,24 @@ pub fn installed() -> Result<Vec<InstalledApp>, String> {
     parse_installed(&output)
 }
 
+pub fn info(
+    installation: &Installation,
+    remote: Option<&str>,
+    reference: &str,
+) -> Result<String, String> {
+    app_identity(reference)?;
+    if let Some(remote) = remote {
+        validate_remote(remote)?;
+        read(
+            installation
+                .command("remote-info")
+                .args(["--", remote, reference]),
+        )
+    } else {
+        read(installation.command("info").args(["--", reference]))
+    }
+}
+
 pub fn search(query: &str) -> Result<Vec<SearchApp>, String> {
     let query = query.trim();
     if query.is_empty() {

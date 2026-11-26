@@ -663,3 +663,114 @@ fn legacy_enter_repeats_stay_suppressed_after_a_launch_finishes() {
     app.handle_key(enter, start + Duration::from_millis(1800));
     assert!(app.desktop_apps.launching);
 }
+
+#[test]
+fn package_details_take_focus_on_a_narrow_terminal() {
+    let mut app = App::default();
+    app.apply_read(Response::Inventory(
+        0,
+        Ok(Inventory {
+            packages: vec![installed_package(
+                "fixture",
+                "1.0-1",
+                Availability::Repository,
+            )],
+            warning: None,
+        }),
+    ));
+    app.update_layout(6, false);
+    let now = Instant::now();
+
+    press(&mut app, "l", now);
+    assert_eq!(app.focus, Pane::Details);
+    press(&mut app, "h", now);
+    assert_eq!(app.focus, Pane::List);
+}
+
+#[test]
+fn package_details_reject_results_for_a_previously_selected_package() {
+    let mut app = App::default();
+    app.apply_read(Response::Inventory(
+        0,
+        Ok(Inventory {
+            packages: vec![
+                installed_package("first", "1.0-1", Availability::Repository),
+                installed_package("second", "2.0-1", Availability::Foreign),
+            ],
+            warning: None,
+        }),
+    ));
+    app.update_layout(6, true);
+    let first = app.package_details.revision;
+
+    press(&mut app, "j", Instant::now());
+    app.update_layout(6, true);
+    let second = app.package_details.revision;
+    assert_ne!(first, second);
+    assert!(!app.apply_read(Response::PackageInfo(first, Ok("Name: first".into()))));
+    assert!(matches!(
+        app.package_details.info,
+        Some(PackageInfo::Loading)
+    ));
+    assert!(app.apply_read(Response::PackageInfo(second, Ok("Name: second".into()))));
+    assert!(matches!(
+        &app.package_details.info,
+        Some(PackageInfo::Ready(info)) if info == "Name: second"
+    ));
+}
+
+#[test]
+fn package_details_can_scroll_to_the_last_wrapped_field() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut app = App::default();
+    app.apply_read(Response::Inventory(
+        0,
+        Ok(Inventory {
+            packages: vec![installed_package(
+                "fixture",
+                "1.0-1",
+                Availability::Repository,
+            )],
+            warning: None,
+        }),
+    ));
+    let now = Instant::now();
+    press(&mut app, "l", now);
+    let mut terminal = Terminal::new(TestBackend::new(42, 14)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+
+    let metadata = "Description : The selected package provides a long description that must wrap more than once in a narrow terminal.\n"
+        .repeat(8)
+        + "Validated By : Signature";
+    app.apply_read(Response::PackageInfo(
+        app.package_details.revision,
+        Ok(metadata),
+    ));
+
+    let mut render = |app: &mut App| {
+        terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let top = render(&mut app);
+    assert!(top.contains("Description"));
+    assert!(!top.contains("Validated By"));
+    assert!(!top.contains("Packages"));
+
+    press(&mut app, "G", now);
+    assert!(render(&mut app).contains("Validated By : Signature"));
+    assert!(app.details_scroll() > 0);
+    assert_eq!(app.selected_installed().unwrap().name, "fixture");
+
+    press(&mut app, "gg", now);
+    assert_eq!(app.details_scroll(), 0);
+    assert!(render(&mut app).contains("Description"));
+}
