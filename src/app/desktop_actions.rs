@@ -1,5 +1,9 @@
-use super::{App, Field, ReadState, Request, View};
+use std::time::{Duration, Instant};
+
+use super::{App, Field, KeyCode, KeyEvent, KeyEventKind, ReadState, Request, View, plain_key};
 use crate::{desktop_apps::Entry, source_views::matches_filter};
+
+const LEGACY_ENTER_QUIET_PERIOD: Duration = Duration::from_millis(800);
 
 #[derive(Debug, Default)]
 pub struct DesktopApps {
@@ -8,9 +12,34 @@ pub struct DesktopApps {
     pub state: ReadState,
     pub(super) revision: u64,
     pub(super) launching: bool,
+    key_event_reporting: bool,
+    last_legacy_enter: Option<Instant>,
+}
+
+impl DesktopApps {
+    pub(super) fn accept_key(&mut self, key: KeyEvent, now: Instant) -> bool {
+        if self.key_event_reporting || key.kind != KeyEventKind::Press {
+            return true;
+        }
+        if key.code != KeyCode::Enter {
+            self.last_legacy_enter = None;
+            return true;
+        }
+        // Older terminals send identical bytes for a press and its autorepeats.
+        // Restart the quiet period even for a suppressed Enter.
+        !plain_key(key)
+            || self
+                .last_legacy_enter
+                .replace(now)
+                .is_none_or(|last| now.duration_since(last) >= LEGACY_ENTER_QUIET_PERIOD)
+    }
 }
 
 impl App {
+    pub fn enable_key_event_reporting(&mut self) {
+        self.desktop_apps.key_event_reporting = true;
+    }
+
     pub fn desktop_app_rows(&self) -> impl Iterator<Item = &Entry> + '_ {
         let filter = self.source_filter(Field::DesktopAppFilter, &self.desktop_apps.filter);
         self.desktop_apps

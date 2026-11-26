@@ -9,9 +9,12 @@ use ratatui::{
     DefaultTerminal,
     crossterm::{
         cursor::Show,
-        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event},
+        event::{
+            self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyboardEnhancementFlags,
+            PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        },
         execute,
-        terminal::{LeaveAlternateScreen, disable_raw_mode},
+        terminal::{LeaveAlternateScreen, disable_raw_mode, supports_keyboard_enhancement},
     },
     layout::Rect,
 };
@@ -29,21 +32,40 @@ pub fn run(mut app: App) -> io::Result<()> {
     }
 
     let original_mode = terminal_mode()?;
+    let mut enhanced_keyboard = false;
     let result = ratatui::try_init().and_then(|mut terminal| {
         app.start_background_reads();
+        if supports_keyboard_enhancement().unwrap_or(false) {
+            execute!(
+                stdout(),
+                PushKeyboardEnhancementFlags(
+                    // Terminals such as Kitty keep Enter in legacy form without the all-keys flag.
+                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+                )
+            )?;
+            enhanced_keyboard = true;
+            app.enable_key_event_reporting();
+        }
         run_loop(&mut terminal, &mut app, &original_mode)
     });
 
-    let cleanup = restore_terminal();
+    let cleanup = restore_terminal(enhanced_keyboard);
     let mode = apply_terminal_mode(&original_mode);
     result.and(cleanup).and(mode)
 }
 
-fn restore_terminal() -> io::Result<()> {
-    // Attempt both cleanup operations even if setup or raw-mode restoration fails.
+fn restore_terminal(enhanced_keyboard: bool) -> io::Result<()> {
+    // Restore the keyboard flags before leaving the screen whose stack we used.
+    let keyboard = if enhanced_keyboard {
+        execute!(stdout(), PopKeyboardEnhancementFlags)
+    } else {
+        Ok(())
+    };
     let raw_mode = disable_raw_mode();
     let screen = execute!(stdout(), DisableBracketedPaste, LeaveAlternateScreen, Show);
-    raw_mode.and(screen)
+    keyboard.and(raw_mode).and(screen)
 }
 
 fn run_loop(

@@ -529,3 +529,37 @@ fn apps_filter_uses_the_launcher_name_and_restores_the_list_on_escape() {
     app.handle_key(KeyEvent::from(KeyCode::Esc), now);
     assert_eq!(app.desktop_app_rows().count(), 2);
 }
+
+#[test]
+fn legacy_enter_repeats_stay_suppressed_after_a_launch_finishes() {
+    let mut app = App {
+        view: View::Apps,
+        ..App::default()
+    };
+    app.apply_read(Response::DesktopApps(
+        0,
+        Ok(vec![crate::desktop_apps::Entry {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            comment: String::new(),
+            path: PathBuf::from("/nonexistent/archoxide-test.desktop"),
+        }]),
+    ));
+
+    let start = Instant::now();
+    let enter = KeyEvent::from(KeyCode::Enter);
+    app.handle_key(enter, start);
+    assert!(app.desktop_apps.launching);
+    app.apply_read(Response::LaunchDesktopApp("Fixture".into(), Ok(())));
+
+    for elapsed in [660, 700, 740, 780, 820, 860, 900] {
+        app.handle_key(enter, start + Duration::from_millis(elapsed));
+        assert!(
+            !app.desktop_apps.launching,
+            "repeat at {elapsed}ms relaunched"
+        );
+    }
+
+    app.handle_key(enter, start + Duration::from_millis(1800));
+    assert!(app.desktop_apps.launching);
+}

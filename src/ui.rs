@@ -113,7 +113,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let prompt = app.prompt();
     let prompt_height = if prompt.is_some() { 3 } else { 0 };
     let status = status_lines(app, palette);
-    let status_height = (status.len() as u16).min(area.height.saturating_sub(prompt_height + 4));
+    let wrap_status = app.view == View::Apps;
+    let status_rows = if wrap_status {
+        let width = usize::from(area.width);
+        status
+            .iter()
+            .map(|line| line.width().div_ceil(width).max(1))
+            .sum()
+    } else {
+        status.len()
+    };
+    let status_height = (status_rows as u16).min(area.height.saturating_sub(prompt_height + 4));
     let [header, input, content, status_area, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(prompt_height),
@@ -128,7 +138,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         draw_prompt(frame, input, title, text, app.editing(), palette);
     }
     draw_content(frame, app, content, palette);
-    frame.render_widget(Paragraph::new(status), status_area);
+    let status = Paragraph::new(status);
+    let status = if wrap_status {
+        status.wrap(Wrap { trim: true })
+    } else {
+        status
+    };
+    frame.render_widget(status, status_area);
     draw_footer(frame, app, footer, palette);
     if app.show_help {
         draw_help(frame, app, content, palette);

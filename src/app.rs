@@ -399,7 +399,9 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, now: Instant) {
-        if key.kind == KeyEventKind::Release {
+        if key.kind == KeyEventKind::Release
+            || (self.view == View::Apps && !self.desktop_apps.accept_key(key, now))
+        {
             return;
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {

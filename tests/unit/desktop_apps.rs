@@ -75,3 +75,22 @@ fn discovers_visible_apps_with_local_overrides_and_localized_names() {
     assert_eq!(apps[0].comment, "Browse the web");
     assert!(apps[0].path.ends_with("local/applications/browser.desktop"));
 }
+
+#[test]
+fn desktop_visibility_uses_the_first_matching_session_desktop() {
+    let temp = tempfile::tempdir().unwrap();
+    let applications = temp.path().join("applications");
+    fs::create_dir(&applications).unwrap();
+    fs::write(
+        applications.join("example.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Example\nExec=/bin/true\nOnlyShowIn=GNOME;\nNotShowIn=Unity;\n",
+    )
+    .unwrap();
+
+    let visible = |desktops: &[&str]| {
+        !discover(std::iter::once(applications.clone()), &[], desktops).is_empty()
+    };
+    assert!(visible(&["Unknown", "GNOME", "Unity"]));
+    assert!(!visible(&["Unity", "GNOME"]));
+    assert!(!visible(&["Unknown"]));
+}

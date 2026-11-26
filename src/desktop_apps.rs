@@ -1,12 +1,15 @@
 use std::{
     collections::HashSet,
     env, io,
-    os::unix::process::CommandExt,
+    os::{
+        fd::OwnedFd,
+        unix::{net::UnixDatagram, process::CommandExt},
+    },
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
-use freedesktop_desktop_entry::{Iter, get_languages_from_env};
+use freedesktop_desktop_entry::{DesktopEntry, Iter, get_languages_from_env};
 
 use crate::packages::executable;
 
@@ -20,26 +23,57 @@ pub struct Entry {
 
 impl Entry {
     pub fn launch(&self) -> Result<(), String> {
-        let status = Command::new("gio")
+        // An app may inherit gio's stderr. A nonblocking datagram socket lets us
+        // collect the diagnostic without waiting for the app to close its stderr.
+        let (diagnostics, stderr) = UnixDatagram::pair()
+            .and_then(|(receiver, sender)| {
+                receiver.set_nonblocking(true)?;
+                sender.set_nonblocking(true)?;
+                Ok((receiver, sender))
+            })
+            .map_err(|error| format!("Could not capture gio diagnostics: {error}"))?;
+        let mut command = Command::new("gio");
+        command
             .arg("launch")
             .arg(&self.path)
-            .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::NotFound {
-                    "Opening desktop apps requires gio, provided by glib2 on Arch Linux.".into()
-                } else {
-                    format!("Could not open {}: {error}", self.name)
+            .stderr(OwnedFd::from(stderr));
+        // SAFETY: The child callback uses only setsid and reads errno on failure.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
                 }
-            })?;
+                Ok(())
+            });
+        }
+        let status = command.status().map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                "Opening desktop apps requires gio, provided by glib2 on Arch Linux.".into()
+            } else {
+                format!("Could not open {}: {error}", self.name)
+            }
+        })?;
         if !status.success() {
-            return Err(format!(
-                "Could not open {}: gio launch returned {status}.",
-                self.name
-            ));
+            let mut buffer = [0; 4096];
+            let mut size = 0;
+            while size < buffer.len() {
+                match diagnostics.recv(&mut buffer[size..]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => size += read,
+                }
+            }
+            let diagnostic = String::from_utf8_lossy(&buffer[..size]);
+            let detail = diagnostic.trim();
+            return Err(if detail.is_empty() {
+                format!(
+                    "Could not open {}: gio launch returned {status}.",
+                    self.name
+                )
+            } else {
+                format!("Could not open {}: {detail}", self.name)
+            });
         }
         Ok(())
     }
@@ -81,12 +115,7 @@ fn discover(
             || entry.no_display()
             || entry.type_() != Some("Application")
             || (!entry.dbus_activatable() && entry.exec().is_none_or(|exec| exec.trim().is_empty()))
-            || entry
-                .only_show_in()
-                .is_some_and(|allowed| !desktops.iter().any(|desktop| allowed.contains(desktop)))
-            || entry
-                .not_show_in()
-                .is_some_and(|excluded| desktops.iter().any(|desktop| excluded.contains(desktop)))
+            || !visible_on_desktop(&entry, desktops)
             || entry
                 .try_exec()
                 .is_some_and(|command| !command_available(command))
@@ -105,6 +134,20 @@ fn discover(
     }
     apps.sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.id.clone()));
     apps
+}
+
+fn visible_on_desktop(entry: &DesktopEntry, desktops: &[&str]) -> bool {
+    let included = entry.only_show_in();
+    let excluded = entry.not_show_in().unwrap_or_default();
+    for desktop in desktops {
+        if included.as_ref().is_some_and(|list| list.contains(desktop)) {
+            return true;
+        }
+        if excluded.contains(desktop) {
+            return false;
+        }
+    }
+    included.is_none()
 }
 
 fn command_available(command: &str) -> bool {
