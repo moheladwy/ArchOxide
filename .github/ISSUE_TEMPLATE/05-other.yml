@@ -1,0 +1,15 @@
+name: General issue
+description: Ask a question or raise a general concern about ArchOxide.
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What would you like to raise?
+      description: Include what you were trying to do and any relevant context.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe what answer or change would help.

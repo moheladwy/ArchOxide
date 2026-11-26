@@ -20,6 +20,18 @@ pub enum Action {
     Search,
     Theme,
     Prompt,
+    CycleAvailability,
+    RefreshInventory,
+    Install,
+    Remove,
+    Upgrade,
+    UpgradeSelected,
+    UpgradeExcept,
+    ToggleMark,
+    ClearMarks,
+    EditSetting,
+    SaveSettings,
+    ResetSettings,
     Help,
     Quit,
 }
@@ -77,6 +89,7 @@ impl Bindings {
                     return None;
                 }
                 (Some(Prefix::Leader), Char('q')) => return Some(Quit),
+                (Some(Prefix::Leader), Char('u')) => return Some(Upgrade),
                 (Some(Prefix::Find), Char('f')) => return Some(Search),
                 (Some(Prefix::Find), Char('t')) => return Some(Theme),
                 _ => {}
@@ -116,6 +129,17 @@ impl Bindings {
             Char('h') => Some(FocusList),
             Char('l') => Some(FocusDetails),
             Char('/') => Some(Prompt),
+            Char('a') => Some(CycleAvailability),
+            Char('R') => Some(RefreshInventory),
+            Char('i') => Some(Install),
+            Char('d') => Some(Remove),
+            Char('u') => Some(UpgradeSelected),
+            Char('U') => Some(UpgradeExcept),
+            Char('x') => Some(ToggleMark),
+            Char('X') => Some(ClearMarks),
+            Char('s') => Some(SaveSettings),
+            Char('r') => Some(ResetSettings),
+            KeyCode::Enter => Some(EditSetting),
             Char('?') => Some(Help),
             Char('g') => {
                 self.pending = Some((Prefix::Go, now + SEQUENCE_TIMEOUT));

@@ -1,0 +1,22 @@
+name: Documentation issue
+description: Report missing, inaccurate, or unclear documentation.
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Page or section
+      description: Link the relevant page or identify where the information belongs.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What needs clarification?
+      description: Describe what is missing or where the instructions break down.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested correction
+      description: Share proposed wording, a working command, or an example if you have one.

@@ -1,0 +1,96 @@
+name: CI
+
+on:
+    pull_request:
+    push:
+        branches: [main]
+        paths:
+            - ".github/workflows/ci.yml"
+            - "src/**"
+            - Cargo.lock
+            - Cargo.toml
+
+permissions:
+    contents: read
+
+jobs:
+    check:
+        name: Build, test, and run
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        env:
+            CARGO_TARGET_DIR: target
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - name: Set up stable Rust
+              run: |
+                  rustup update stable --no-self-update
+                  rustup component add --toolchain stable rustfmt clippy
+
+            - name: Check formatting and lints
+              run: |
+                  cargo +stable fmt --check
+                  cargo +stable clippy --locked --all-targets -- -D warnings
+
+            - name: Build
+              run: cargo +stable build --locked
+
+            - name: Test
+              run: cargo +stable test --locked
+
+            - name: Run the TUI in a pseudo-terminal
+              run: |
+                  python3 - <<'PY'
+                  import os
+                  from pathlib import Path
+                  import pty
+                  import select
+                  import subprocess
+                  import tempfile
+                  import termios
+                  import time
+
+                  with tempfile.TemporaryDirectory() as directory:
+                      pacman = Path(directory) / "pacman"
+                      pacman.write_text(
+                          '#!/bin/sh\ncase "$1" in\n'
+                          "  -Q) echo 'archoxide-ci-fixture 1.0-1' ;;\n"
+                          "  -Qqm) exit 1 ;;\n"
+                          "  *) exit 2 ;;\n"
+                          "esac\n",
+                          encoding="utf-8",
+                      )
+                      pacman.chmod(0o755)
+                      env = dict(os.environ, PATH=directory, TERM="xterm-256color", XDG_CONFIG_HOME=directory)
+
+                      master, slave = pty.openpty()
+                      try:
+                          termios.tcsetwinsize(slave, (24, 100))
+                          original_mode = termios.tcgetattr(slave)
+                          with subprocess.Popen(["target/debug/archoxide"], stdin=slave, stdout=slave, stderr=slave, env=env) as app:
+                              try:
+                                  output = bytearray()
+                                  deadline = time.monotonic() + 10
+                                  while b"archoxide-ci-fixture" not in output:
+                                      remaining = deadline - time.monotonic()
+                                      if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
+                                          raise RuntimeError(f"Installed view did not render the fixture: {output[-1024:]!r}")
+                                      output.extend(os.read(master, 4096))
+
+                                  os.write(master, b" q")
+                                  if app.wait(timeout=10) != 0:
+                                      raise RuntimeError(f"ArchOxide exited with status {app.returncode}")
+                                  if termios.tcgetattr(slave) != original_mode:
+                                      raise RuntimeError("ArchOxide did not restore the terminal mode")
+                              finally:
+                                  if app.poll() is None:
+                                      app.kill()
+                      finally:
+                          os.close(master)
+                          os.close(slave)
+
+                  print("ArchOxide rendered Installed, quit, and restored the terminal.")
+                  PY

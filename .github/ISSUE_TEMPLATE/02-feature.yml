@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest new functionality or an improvement to an existing workflow.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe your workflow and where you get stuck or need extra steps.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe what ArchOxide should do and how you would use it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or examples
+      description: Share workarounds, mockups, or examples from other tools if relevant.
