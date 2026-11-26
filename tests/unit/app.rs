@@ -184,8 +184,105 @@ fn search_keeps_repository_results_when_aur_fails_and_discards_stale_response() 
 }
 
 #[test]
+fn search_follows_the_best_match_when_sources_finish_in_a_different_order() {
+    let mut app = App {
+        view: View::Search,
+        query: "TOOL".into(),
+        search_states: [
+            ReadState::Loading,
+            ReadState::Loading,
+            ReadState::Idle,
+            ReadState::Idle,
+        ],
+        ..App::default()
+    };
+    let repository = Source::Repository("extra".into());
+    let exact = search_result("tool", Source::Aur);
+    let prefix = search_result("tool-extra", repository.clone());
+    let substring = search_result("other-tool", repository.clone());
+    let description = search_result("utility", repository);
+
+    app.apply_read(Response::Search(
+        SearchSource::Aur,
+        0,
+        Ok(vec![exact.clone()]),
+    ));
+    assert_eq!(app.selected_result(), Some(&exact));
+
+    app.apply_read(Response::Search(
+        SearchSource::Repository,
+        0,
+        Ok(vec![description.clone(), substring.clone(), prefix.clone()]),
+    ));
+    assert_eq!(
+        app.search_rows().collect::<Vec<_>>(),
+        [&exact, &prefix, &substring, &description]
+    );
+    assert_eq!(app.selected_result(), Some(&exact));
+    assert_eq!(app.selection_mut().selected(), Some(0));
+}
+
+#[test]
+fn late_arriving_top_results_move_the_untouched_viewport_to_the_first_row() {
+    let mut app = App {
+        view: View::Search,
+        query: "tool".into(),
+        ..App::default()
+    };
+    let prefix = search_result("tool-extra", Source::Aur);
+    let exact = search_result("tool", Source::Repository("extra".into()));
+    app.apply_read(Response::Search(SearchSource::Aur, 0, Ok(vec![prefix])));
+
+    app.apply_read(Response::Search(
+        SearchSource::Repository,
+        0,
+        Ok(vec![exact.clone()]),
+    ));
+    assert_eq!(app.selected_result(), Some(&exact));
+    assert_eq!(app.selection_mut().offset(), 0);
+}
+
+#[test]
+fn submitting_a_new_search_discards_the_previous_selection() {
+    let mut app = App {
+        view: View::Search,
+        query: "utils".into(),
+        ..App::default()
+    };
+    let repository = Source::Repository("extra".into());
+    let old_selection = search_result("utils-tool", repository.clone());
+    let exact = search_result("tool", repository.clone());
+    app.apply_read(Response::Search(
+        SearchSource::Repository,
+        0,
+        Ok(vec![
+            search_result("utils-extra", repository),
+            old_selection.clone(),
+        ]),
+    ));
+    let now = Instant::now();
+    press(&mut app, "j/", now);
+    assert_eq!(app.selected_result(), Some(&old_selection));
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        now,
+    );
+    press(&mut app, "tool", now);
+    app.handle_key(KeyEvent::from(KeyCode::Enter), now);
+
+    app.apply_read(Response::Search(
+        SearchSource::Repository,
+        app.search_id,
+        Ok(vec![old_selection, exact.clone()]),
+    ));
+    assert_eq!(app.selected_result(), Some(&exact));
+    assert_eq!(app.selection_mut().offset(), 0);
+}
+
+#[test]
 fn search_preserves_the_selected_source_when_repository_rows_arrive_later() {
     let mut app = App {
+        view: View::Search,
         search_states: [
             ReadState::Loading,
             ReadState::Loading,
@@ -196,12 +293,14 @@ fn search_preserves_the_selected_source_when_repository_rows_arrive_later() {
     };
     let repo = search_result("same-name", Source::Repository("extra".into()));
     let aur = search_result("same-name", Source::Aur);
+    let other = search_result("other", Source::Aur);
 
     app.apply_read(Response::Search(
         SearchSource::Aur,
         0,
-        Ok(vec![aur.clone()]),
+        Ok(vec![other.clone(), aur.clone()]),
     ));
+    app.handle_key(KeyEvent::from(KeyCode::Down), Instant::now());
     assert_eq!(app.selected_result(), Some(&aur));
 
     app.apply_read(Response::Search(
@@ -209,7 +308,7 @@ fn search_preserves_the_selected_source_when_repository_rows_arrive_later() {
         0,
         Ok(vec![repo.clone()]),
     ));
-    assert_eq!(app.search_rows().collect::<Vec<_>>(), [&repo, &aur]);
+    assert_eq!(app.search_rows().collect::<Vec<_>>(), [&repo, &other, &aur]);
     assert_eq!(app.selected_result(), Some(&aur));
 }
 
@@ -447,6 +546,8 @@ fn unified_search_preserves_sources_and_dispatches_installs() {
         3,
         Ok(vec![image.clone()])
     )));
+    let now = Instant::now();
+    press(&mut app, "jk", now);
     assert!(app.apply_read(Response::Search(
         SearchSource::Repository,
         3,
@@ -462,7 +563,6 @@ fn unified_search_preserves_sources_and_dispatches_installs() {
         [&repo, &aur, &flatpak, &image]
     );
     assert_eq!(app.selected_result(), Some(&flatpak));
-    let now = Instant::now();
     press(&mut app, "i", now);
     assert!(matches!(
         &app.confirmation,
