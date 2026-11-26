@@ -1,6 +1,10 @@
 # ArchOxide
 
-ArchOxide is a keyboard-driven terminal UI for managing Arch Linux packages from configured `pacman` repositories and the Arch User Repository (AUR). The Rust 2024 crate is currently a scaffold.
+ArchOxide is a keyboard-driven terminal UI for managing Arch Linux packages from configured `pacman` repositories and the Arch User Repository (AUR).
+
+## Run the TUI
+
+Run `cargo run` from an interactive terminal. The current build opens the Installed, Search, and Settings views. Use `Tab` and `Shift+Tab` to switch views, `?` to see all bindings, and `Space q` to quit. The package views and Settings preview are ready for backend integration.
 
 ## MVP
 
@@ -11,7 +15,7 @@ ArchOxide is a keyboard-driven terminal UI for managing Arch Linux packages from
 
 ## Development commands
 
-- `cargo run` builds and runs the current scaffold.
+- `cargo run` builds and runs the TUI.
 - `cargo fmt --check` verifies formatting.
 - `cargo clippy --all-targets` checks the application and its tests for lint warnings.
 - `cargo test` runs the test suite.
