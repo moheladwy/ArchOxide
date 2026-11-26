@@ -16,6 +16,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
+use crate::packages::{SearchResult, Source as PackageSource};
+
 const EXTENSION: &str = ".AppImage";
 const MANIFEST: &str = "origin.toml";
 
@@ -41,6 +43,66 @@ pub fn installed() -> Result<Vec<Entry>, String> {
         return Ok(Vec::new());
     };
     store.installed()
+}
+
+// AppImages have no configured remote catalog. Search managed entries and
+// recognize explicit local files or HTTPS sources without downloading anything.
+pub fn search(query: &str) -> Result<Vec<SearchResult>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    if has_control(query) {
+        return Err("Search terms cannot contain control characters".into());
+    }
+
+    let entries = installed()?;
+    let needle = query.to_lowercase();
+    let mut results: Vec<_> = entries
+        .iter()
+        .filter(|entry| {
+            entry.name.to_lowercase().contains(&needle)
+                || entry
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.to_lowercase().contains(&needle))
+                || entry.path.to_string_lossy().to_lowercase().contains(&needle)
+        })
+        .map(|entry| SearchResult {
+            name: entry.name.clone(),
+            version: String::new(),
+            source: PackageSource::ManagedAppImage(entry.path.clone()),
+            description: entry.origin.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    let is_https = query
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
+    let is_file =
+        needle.ends_with(".appimage") && (query.contains('/') || Path::new(query).is_file());
+    if is_https || is_file {
+        let source = Source::parse(query)?;
+        if let Source::Local(path) = &source
+            && !path.is_file()
+        {
+            return Err("The AppImage source must be a regular file".into());
+        }
+        let origin = source.origin()?;
+        let already_managed = entries.iter().any(|entry| {
+            entry.origin.as_deref() == Some(origin.as_str())
+                || entry.path.to_str() == Some(origin.as_str())
+        });
+        if !already_managed {
+            results.push(SearchResult {
+                name: source.name()?,
+                version: String::new(),
+                source: PackageSource::AppImageImport(origin.clone()),
+                description: origin,
+            });
+        }
+    }
+    Ok(results)
 }
 
 impl Operation {

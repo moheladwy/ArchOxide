@@ -274,7 +274,7 @@ fn display_text(text: &str) -> String {
         .collect()
 }
 
-fn app_identity(reference: &str) -> Result<(&str, &str), String> {
+pub(crate) fn app_identity(reference: &str) -> Result<(&str, &str), String> {
     let mut components = reference.split('/');
     match (
         components.next(),

@@ -12,7 +12,7 @@ use crate::{
     appimage,
     config::{Density, Theme},
     flatpak,
-    packages::Transaction,
+    packages::{Source, Transaction},
     picker::{Kind as PickerKind, Picker},
     source_views::flatpak_key,
     transaction_terminal::{self, TransactionTerminal},
@@ -288,7 +288,7 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
             .search_rows()
             .map(|package| {
                 package_row(
-                    &package.name,
+                    &format!("[{}] {}", package.source.label(), package.name),
                     &package.version,
                     &package.source.to_string(),
                     false,
@@ -471,15 +471,29 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) 
             ]
         }),
         View::Search => app.selected_result().map(|package| {
-            let installed = app.installed_version(&package.name).unwrap_or("—");
-            vec![
+            let mut lines = vec![
                 Line::from(package.name.as_str()).bold(),
                 Line::raw(format!("Source {}", package.source)),
-                Line::raw(format!("Available {}", package.version)),
-                Line::raw(format!("Installed {installed}")),
-                Line::raw(""),
-                Line::raw(package.description.as_str()),
-            ]
+            ];
+            if !package.version.is_empty() {
+                lines.push(Line::raw(format!("Available {}", package.version)));
+            }
+            match &package.source {
+                Source::Repository(_) | Source::Aur => {
+                    let installed = app.installed_version(&package.name).unwrap_or("—");
+                    lines.push(Line::raw(format!("Installed {installed}")));
+                }
+                Source::Flatpak { reference, .. } => {
+                    lines.push(Line::raw(reference.as_str()));
+                }
+                Source::ManagedAppImage(path) => {
+                    lines.push(Line::raw(one_line(&path.display().to_string())));
+                }
+                Source::AppImageImport(_) => {}
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::raw(one_line(&package.description)));
+            lines
         }),
         View::Flatpak if app.sources.flatpak_query.is_some() => {
             app.selected_flatpak_result().map(|entry| {
@@ -574,7 +588,10 @@ fn status_lines(app: &App, palette: Palette) -> Vec<Line<'static>> {
             } else if !app.yay_available {
                 lines.push(Line::raw(" AUR unavailable  ·  yay was not found").fg(palette.muted));
             }
-            for (label, state) in ["Repositories", "AUR"].into_iter().zip(&app.search_states) {
+            for (label, state) in ["Pacman", "AUR", "Flatpak", "AppImage"]
+                .into_iter()
+                .zip(&app.search_states)
+            {
                 match state {
                     ReadState::Loading => {
                         lines.push(Line::raw(format!(" {label}  ·  Searching…")).fg(palette.muted))
