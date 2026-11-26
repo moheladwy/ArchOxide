@@ -3,16 +3,16 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap},
 };
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::{
-    app::{App, Pane, ReadState, Setting, View},
+    app::{App, PackageInfo, Pane, ReadState, Setting, View},
     appimage,
     config::{Density, Theme},
     flatpak,
-    packages::Transaction,
+    packages::{SearchResult, Source, Transaction},
     picker::{Kind as PickerKind, Picker},
     source_views::flatpak_key,
     transaction_terminal::{self, TransactionTerminal},
@@ -27,7 +27,7 @@ const HELP: &[&str] = &[
     "Alt+Tab / Alt+Shift+Tab   Cycle views",
     "/                 Filter or search",
     "a                 Filter by availability",
-    "R                 Refresh Installed",
+    "R                 Refresh the current list",
     "i                 Install the highlighted result",
     "d                 Remove marked apps or the highlighted row",
     "Space u           Update all packages",
@@ -35,12 +35,13 @@ const HELP: &[&str] = &[
     "x / X             Toggle package mark / clear marks",
     "Space e           Open Installed",
     "Space p / Space a Open Flatpak / AppImages",
+    "Space o           Open desktop Apps",
     "f                 Search Flatpak remotes",
     "Esc               Return to installed Flatpaks",
     "i / e             Import / replace an AppImage",
     "Space f f         Open package search",
     "Space f t         Go to Theme",
-    "Enter             Edit selected setting",
+    "Enter             Open selected app or edit setting",
     "s / r             Save settings / reset draft",
     "Ctrl+u            Clear text in a prompt",
     "Space q / Ctrl+c  Quit",
@@ -113,7 +114,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let prompt = app.prompt();
     let prompt_height = if prompt.is_some() { 3 } else { 0 };
     let status = status_lines(app, palette);
-    let status_height = (status.len() as u16).min(area.height.saturating_sub(prompt_height + 4));
+    let wrap_status = app.view == View::Apps;
+    let status_rows = if wrap_status {
+        let width = usize::from(area.width);
+        status
+            .iter()
+            .map(|line| line.width().div_ceil(width).max(1))
+            .sum()
+    } else {
+        status.len()
+    };
+    let status_height = (status_rows as u16).min(area.height.saturating_sub(prompt_height + 4));
     let [header, input, content, status_area, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(prompt_height),
@@ -128,7 +139,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         draw_prompt(frame, input, title, text, app.editing(), palette);
     }
     draw_content(frame, app, content, palette);
-    frame.render_widget(Paragraph::new(status), status_area);
+    let status = Paragraph::new(status);
+    let status = if wrap_status {
+        status.wrap(Wrap { trim: true })
+    } else {
+        status
+    };
+    frame.render_widget(status, status_area);
     draw_footer(frame, app, footer, palette);
     if app.show_help {
         draw_help(frame, app, content, palette);
@@ -238,6 +255,11 @@ fn draw_prompt(
 
 fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palette) {
     let has_details = area.width >= 72 && area.height >= 4;
+    if !has_details && app.focus == Pane::Details && app.view.has_package_details() {
+        app.update_layout(0, true);
+        draw_details(frame, app, area, palette);
+        return;
+    }
     let [list_area, details_area] = if has_details {
         let width = u16::from(app.config.appearance.details_width_percent);
         Layout::horizontal([
@@ -254,6 +276,7 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
         View::Flatpak if app.sources.flatpak_query.is_some() => "Flatpak results",
         View::Flatpak => "Installed Flatpaks",
         View::AppImages => "Managed AppImages",
+        View::Apps => "Desktop apps",
         View::Settings => "Preferences",
     };
     let base = palette.panel(title, has_details && app.focus == Pane::List);
@@ -287,16 +310,7 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
             .collect(),
         View::Search => app
             .search_rows()
-            .map(|package| {
-                package_row(
-                    &package.name,
-                    &package.version,
-                    &package.source.to_string(),
-                    false,
-                    comfortable,
-                    palette,
-                )
-            })
+            .map(|package| search_row(package, inner.width.saturating_sub(2), comfortable, palette))
             .collect(),
         View::Flatpak if app.sources.flatpak_query.is_some() => app
             .sources
@@ -339,6 +353,19 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
                     "",
                     source,
                     app.sources.images.marks.contains(&entry.path),
+                    comfortable,
+                    palette,
+                )
+            })
+            .collect(),
+        View::Apps => app
+            .desktop_app_rows()
+            .map(|entry| {
+                package_row(
+                    &one_line(&entry.name),
+                    "",
+                    &one_line(&entry.comment),
+                    false,
                     comfortable,
                     palette,
                 )
@@ -398,6 +425,11 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
                 ReadState::Ready => "No managed AppImages match.",
                 ReadState::Failed(_) => "Managed AppImages could not be read.",
             },
+            View::Apps => match app.desktop_apps.state {
+                ReadState::Idle | ReadState::Loading => "Reading desktop apps…",
+                ReadState::Ready => "No desktop apps match.",
+                ReadState::Failed(_) => "Desktop apps could not be read.",
+            },
             View::Settings => "",
         };
         frame.render_widget(
@@ -411,7 +443,12 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
             List::new(rows)
                 .block(block)
                 .highlight_style(palette.highlight())
-                .highlight_symbol("› "),
+                .highlight_symbol("› ")
+                .highlight_spacing(if app.view == View::Search {
+                    HighlightSpacing::Always
+                } else {
+                    HighlightSpacing::WhenSelected
+                }),
             list_area,
             app.selection_mut(),
         );
@@ -462,7 +499,63 @@ fn package_row(
     }
 }
 
-fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
+// Reserve the right edge for the source type, even when a name is too long.
+fn search_row(
+    package: &SearchResult,
+    width: u16,
+    comfortable: bool,
+    palette: Palette,
+) -> ListItem<'static> {
+    let width = usize::from(width);
+    let source = package.source.label();
+    let left_width = width.saturating_sub(source.len() + 1);
+    let name = fit_search_text(&package.name, left_width);
+    let mut left = vec![Span::raw(name.clone())];
+    let mut used = Line::raw(name).width();
+    if !comfortable && !package.version.is_empty() {
+        let version = format!("  ·  {}", package.version);
+        let version = fit_search_text(&version, left_width.saturating_sub(used));
+        used += Line::raw(version.as_str()).width();
+        left.push(version.fg(palette.muted));
+    }
+    let gap = width.saturating_sub(used + source.len());
+    left.push(Span::raw(" ".repeat(gap)));
+    left.push(source.fg(palette.accent));
+    let first = Line::from(left);
+    if comfortable {
+        let metadata = if package.version.is_empty() {
+            package.source.to_string()
+        } else {
+            format!("{}  ·  {}", package.source, package.version)
+        };
+        ListItem::new(vec![first, Line::raw(metadata).fg(palette.muted)])
+    } else {
+        ListItem::new(first)
+    }
+}
+
+fn fit_search_text(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if Line::raw(text).width() <= width {
+        return text.to_owned();
+    }
+    let mut result = String::new();
+    let mut used = 0;
+    for character in text.chars() {
+        let character_width = Span::raw(character.to_string()).width();
+        if used + character_width >= width {
+            break;
+        }
+        result.push(character);
+        used += character_width;
+    }
+    result.push('…');
+    result
+}
+
+fn draw_details(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palette) {
     let lines = match app.view {
         View::Installed => app.selected_installed().map(|package| {
             vec![
@@ -472,15 +565,29 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) 
             ]
         }),
         View::Search => app.selected_result().map(|package| {
-            let installed = app.installed_version(&package.name).unwrap_or("—");
-            vec![
+            let mut lines = vec![
                 Line::from(package.name.as_str()).bold(),
                 Line::raw(format!("Source {}", package.source)),
-                Line::raw(format!("Available {}", package.version)),
-                Line::raw(format!("Installed {installed}")),
-                Line::raw(""),
-                Line::raw(package.description.as_str()),
-            ]
+            ];
+            if !package.version.is_empty() {
+                lines.push(Line::raw(format!("Available {}", package.version)));
+            }
+            match &package.source {
+                Source::Repository(_) | Source::Aur => {
+                    let installed = app.installed_version(&package.name).unwrap_or("—");
+                    lines.push(Line::raw(format!("Installed {installed}")));
+                }
+                Source::Flatpak { reference, .. } => {
+                    lines.push(Line::raw(reference.as_str()));
+                }
+                Source::ManagedAppImage(path) => {
+                    lines.push(Line::raw(one_line(&path.display().to_string())));
+                }
+                Source::AppImageImport(_) => {}
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::raw(one_line(&package.description)));
+            lines
         }),
         View::Flatpak if app.sources.flatpak_query.is_some() => {
             app.selected_flatpak_result().map(|entry| {
@@ -509,6 +616,13 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) 
                 Line::raw(entry.origin.as_deref().unwrap_or("—")),
             ]
         }),
+        View::Apps => app.selected_desktop_app().map(|entry| {
+            vec![
+                Line::from(one_line(&entry.name)).bold(),
+                Line::raw(one_line(&entry.id)),
+                Line::raw(one_line(&entry.comment)),
+            ]
+        }),
         View::Settings => app.selected_setting().map(|setting| {
             vec![
                 Line::from(setting.label()).bold(),
@@ -517,13 +631,40 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) 
         }),
     };
     let block = palette.panel("Details", app.focus == Pane::Details);
-    if let Some(lines) = lines {
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: true }).block(block),
-            area,
-        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if let Some(mut lines) = lines {
+        match &app.package_details.info {
+            Some(PackageInfo::Loading) => {
+                lines.push(Line::raw(""));
+                lines.push(Line::raw("Loading package information…").fg(palette.muted));
+            }
+            Some(PackageInfo::Ready(info)) if !info.is_empty() => {
+                lines.push(Line::raw(""));
+                lines.extend(info.lines().map(|line| Line::raw(one_line(line))));
+            }
+            Some(PackageInfo::Failed(error)) => {
+                lines.push(Line::raw(""));
+                lines.push(Line::raw(one_line(error)).fg(palette.accent));
+            }
+            Some(PackageInfo::Ready(_)) | None => {}
+        }
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+        let hidden_rows = paragraph
+            .line_count(inner.width)
+            .saturating_sub(usize::from(inner.height));
+        let scroll_limit = u16::try_from(hidden_rows).unwrap_or(u16::MAX);
+        let scroll = app.details_scroll().min(scroll_limit);
+        frame.render_widget(paragraph.scroll((scroll, 0)), inner);
+        app.update_details_layout(scroll_limit, inner.height);
     } else {
-        frame.render_widget(block, area);
+        if app.focus == Pane::Details && app.view.has_package_details() {
+            frame.render_widget(
+                Paragraph::new("Select a package to view its details."),
+                inner,
+            );
+        }
+        app.update_details_layout(0, inner.height);
     }
 }
 
@@ -575,7 +716,10 @@ fn status_lines(app: &App, palette: Palette) -> Vec<Line<'static>> {
             } else if !app.yay_available {
                 lines.push(Line::raw(" AUR unavailable  ·  yay was not found").fg(palette.muted));
             }
-            for (label, state) in ["Repositories", "AUR"].into_iter().zip(&app.search_states) {
+            for (label, state) in ["Pacman", "AUR", "Flatpak", "AppImage"]
+                .into_iter()
+                .zip(&app.search_states)
+            {
                 match state {
                     ReadState::Loading => {
                         lines.push(Line::raw(format!(" {label}  ·  Searching…")).fg(palette.muted))
@@ -608,6 +752,13 @@ fn status_lines(app: &App, palette: Palette) -> Vec<Line<'static>> {
             &app.sources.images.state,
             app.image_rows().count(),
             app.sources.images.marks.len(),
+            palette,
+        ),
+        View::Apps => app_source_status(
+            &mut lines,
+            &app.desktop_apps.state,
+            app.desktop_app_rows().count(),
+            0,
             palette,
         ),
         View::Settings if app.settings_dirty() => {
@@ -650,21 +801,24 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
             area,
         );
         return;
+    } else if app.focus == Pane::Details && app.view.has_package_details() {
+        " h Back  j/k Scroll  Ctrl+u/d Page  gg/G First/last"
     } else {
         match app.view {
             View::Installed => {
-                " ? Help  x Mark  u Selected  U Except  Space u All  / Filter  d Remove  Tab Views"
+                " ? Help  l Details  / Filter  x Mark  u Selected  U Except  Space u All  d Remove"
             }
-            View::Search => " ? Help  / Search  i Install  Space u All  Tab Views",
+            View::Search => " ? Help  l Details  / Search  i Install  Space u All  Tab Views",
             View::Flatpak if app.sources.flatpak_query.is_some() => {
-                " ? Help  f Search  i Install  Esc Installed  Tab Views"
+                " ? Help  l Details  f Search  i Install  Esc Installed  Tab Views"
             }
             View::Flatpak => {
-                " ? Help  f Search  / Filter  d Remove  u/U Update  Space u All  x Mark"
+                " ? Help  l Details  f Search  / Filter  d Remove  u/U Update  Space u All  x Mark"
             }
             View::AppImages => {
-                " ? Help  i Import  e Replace  d Remove  u/U Update  Space u All  x Mark"
+                " ? Help  l Details  i Import  e Replace  d Remove  u/U Update  Space u All  x Mark"
             }
+            View::Apps => " Enter Open  / Filter  R Refresh  Tab Views  ? Help",
             View::Settings => " ? Help  Enter Edit  s Save  r Reset  Tab Views",
         }
     };

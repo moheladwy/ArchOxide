@@ -184,19 +184,123 @@ fn search_keeps_repository_results_when_aur_fails_and_discards_stale_response() 
 }
 
 #[test]
-fn search_preserves_the_selected_source_when_repository_rows_arrive_later() {
+fn search_follows_the_best_match_when_sources_finish_in_a_different_order() {
     let mut app = App {
-        search_states: [ReadState::Loading, ReadState::Loading],
+        view: View::Search,
+        query: "TOOL".into(),
+        search_states: [
+            ReadState::Loading,
+            ReadState::Loading,
+            ReadState::Idle,
+            ReadState::Idle,
+        ],
         ..App::default()
     };
-    let repo = search_result("same-name", Source::Repository("extra".into()));
-    let aur = search_result("same-name", Source::Aur);
+    let repository = Source::Repository("extra".into());
+    let exact = search_result("tool", Source::Aur);
+    let prefix = search_result("tool-extra", repository.clone());
+    let substring = search_result("other-tool", repository.clone());
+    let description = search_result("utility", repository);
 
     app.apply_read(Response::Search(
         SearchSource::Aur,
         0,
-        Ok(vec![aur.clone()]),
+        Ok(vec![exact.clone()]),
     ));
+    assert_eq!(app.selected_result(), Some(&exact));
+
+    app.apply_read(Response::Search(
+        SearchSource::Repository,
+        0,
+        Ok(vec![description.clone(), substring.clone(), prefix.clone()]),
+    ));
+    assert_eq!(
+        app.search_rows().collect::<Vec<_>>(),
+        [&exact, &prefix, &substring, &description]
+    );
+    assert_eq!(app.selected_result(), Some(&exact));
+    assert_eq!(app.selection_mut().selected(), Some(0));
+}
+
+#[test]
+fn late_arriving_top_results_move_the_untouched_viewport_to_the_first_row() {
+    let mut app = App {
+        view: View::Search,
+        query: "tool".into(),
+        ..App::default()
+    };
+    let prefix = search_result("tool-extra", Source::Aur);
+    let exact = search_result("tool", Source::Repository("extra".into()));
+    app.apply_read(Response::Search(SearchSource::Aur, 0, Ok(vec![prefix])));
+
+    app.apply_read(Response::Search(
+        SearchSource::Repository,
+        0,
+        Ok(vec![exact.clone()]),
+    ));
+    assert_eq!(app.selected_result(), Some(&exact));
+    assert_eq!(app.selection_mut().offset(), 0);
+}
+
+#[test]
+fn submitting_a_new_search_discards_the_previous_selection() {
+    let mut app = App {
+        view: View::Search,
+        query: "utils".into(),
+        ..App::default()
+    };
+    let repository = Source::Repository("extra".into());
+    let old_selection = search_result("utils-tool", repository.clone());
+    let exact = search_result("tool", repository.clone());
+    app.apply_read(Response::Search(
+        SearchSource::Repository,
+        0,
+        Ok(vec![
+            search_result("utils-extra", repository),
+            old_selection.clone(),
+        ]),
+    ));
+    let now = Instant::now();
+    press(&mut app, "j/", now);
+    assert_eq!(app.selected_result(), Some(&old_selection));
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        now,
+    );
+    press(&mut app, "tool", now);
+    app.handle_key(KeyEvent::from(KeyCode::Enter), now);
+
+    app.apply_read(Response::Search(
+        SearchSource::Repository,
+        app.search_id,
+        Ok(vec![old_selection, exact.clone()]),
+    ));
+    assert_eq!(app.selected_result(), Some(&exact));
+    assert_eq!(app.selection_mut().offset(), 0);
+}
+
+#[test]
+fn search_preserves_the_selected_source_when_repository_rows_arrive_later() {
+    let mut app = App {
+        view: View::Search,
+        search_states: [
+            ReadState::Loading,
+            ReadState::Loading,
+            ReadState::Idle,
+            ReadState::Idle,
+        ],
+        ..App::default()
+    };
+    let repo = search_result("same-name", Source::Repository("extra".into()));
+    let aur = search_result("same-name", Source::Aur);
+    let other = search_result("other", Source::Aur);
+
+    app.apply_read(Response::Search(
+        SearchSource::Aur,
+        0,
+        Ok(vec![other.clone(), aur.clone()]),
+    ));
+    app.handle_key(KeyEvent::from(KeyCode::Down), Instant::now());
     assert_eq!(app.selected_result(), Some(&aur));
 
     app.apply_read(Response::Search(
@@ -204,7 +308,7 @@ fn search_preserves_the_selected_source_when_repository_rows_arrive_later() {
         0,
         Ok(vec![repo.clone()]),
     ));
-    assert_eq!(app.search_rows().collect::<Vec<_>>(), [&repo, &aur]);
+    assert_eq!(app.search_rows().collect::<Vec<_>>(), [&repo, &other, &aur]);
     assert_eq!(app.selected_result(), Some(&aur));
 }
 
@@ -408,7 +512,7 @@ fn disabled_sources_are_persisted_and_skipped_by_navigation() {
     assert!(loaded.packages.aur_enabled);
     assert_eq!(
         app.views().collect::<Vec<_>>(),
-        [View::Installed, View::Search, View::Settings]
+        [View::Installed, View::Search, View::Apps, View::Settings]
     );
     assert!(!app.apply_read(Response::FlatpakInventory(0, Ok(Vec::new()))));
     assert!(!app.apply_read(Response::ImageInventory(0, Ok(Vec::new()))));
@@ -423,10 +527,280 @@ fn disabled_sources_are_persisted_and_skipped_by_navigation() {
             .contains("AppImages support is off")
     );
     app.handle_key(KeyEvent::from(KeyCode::BackTab), now);
+    assert_eq!(app.view, View::Apps);
+    app.handle_key(KeyEvent::from(KeyCode::BackTab), now);
     assert_eq!(app.view, View::Search);
+    app.handle_key(KeyEvent::from(KeyCode::Tab), now);
+    assert_eq!(app.view, View::Apps);
     app.handle_key(KeyEvent::from(KeyCode::Tab), now);
     assert_eq!(app.view, View::Settings);
 
     press(&mut app, "rs", now);
     assert_eq!(app.views().collect::<Vec<_>>(), View::ALL);
+}
+
+#[test]
+fn unified_search_preserves_sources_and_dispatches_installs() {
+    let mut app = App {
+        view: View::Search,
+        search_id: 3,
+        ..App::default()
+    };
+    let repo = search_result("demo", Source::Repository("extra".into()));
+    let aur = search_result("demo", Source::Aur);
+    let flatpak = search_result(
+        "demo",
+        Source::Flatpak {
+            installation: crate::flatpak::Installation::User,
+            remote: "flathub".into(),
+            reference: "app/org.example.Demo/x86_64/stable".into(),
+        },
+    );
+    let image = search_result(
+        "demo",
+        Source::AppImageImport("https://example.org/demo.AppImage".into()),
+    );
+    assert!(app.apply_read(Response::Search(
+        SearchSource::Flatpak,
+        3,
+        Ok(vec![flatpak.clone()])
+    )));
+    assert_eq!(app.selected_result(), Some(&flatpak));
+    assert!(!app.apply_read(Response::Search(
+        SearchSource::AppImage,
+        2,
+        Ok(vec![image.clone()])
+    )));
+    assert!(app.apply_read(Response::Search(
+        SearchSource::AppImage,
+        3,
+        Ok(vec![image.clone()])
+    )));
+    let now = Instant::now();
+    press(&mut app, "jk", now);
+    assert!(app.apply_read(Response::Search(
+        SearchSource::Repository,
+        3,
+        Ok(vec![repo.clone()])
+    )));
+    assert!(app.apply_read(Response::Search(
+        SearchSource::Aur,
+        3,
+        Ok(vec![aur.clone()])
+    )));
+    assert_eq!(
+        app.search_rows().collect::<Vec<_>>(),
+        [&repo, &aur, &flatpak, &image]
+    );
+    assert_eq!(app.selected_result(), Some(&flatpak));
+    press(&mut app, "i", now);
+    assert!(matches!(
+        &app.confirmation,
+        Some(Transaction::Flatpak(crate::flatpak::Operation::Install(result)))
+            if result.remote == "flathub"
+                && result.reference == "app/org.example.Demo/x86_64/stable"
+                && result.installation == crate::flatpak::Installation::User
+    ));
+    app.handle_key(KeyEvent::from(KeyCode::Esc), now);
+    press(&mut app, "ji", now);
+    assert!(matches!(
+        &app.confirmation,
+        Some(Transaction::AppImage(crate::appimage::Operation::Import(url)))
+            if url == "https://example.org/demo.AppImage"
+    ));
+}
+
+#[test]
+fn apps_tab_is_reachable_without_enabling_package_sources() {
+    let mut config = Config::default();
+    config.packages.flatpak_enabled = false;
+    config.packages.appimage_enabled = false;
+    let mut app = App::new(config, None, None);
+    let now = Instant::now();
+
+    app.handle_key(KeyEvent::from(KeyCode::Tab), now);
+    app.handle_key(KeyEvent::from(KeyCode::Tab), now);
+
+    assert_eq!(app.view.title(), "Apps");
+    assert!(app.views().any(|view| view.title() == "Apps"));
+    assert!(app.has_pending_reads());
+
+    press(&mut app, "diuUxX u", now);
+    assert!(app.confirmation.is_none());
+    assert!(app.take_transaction().is_none());
+}
+
+#[test]
+fn apps_filter_uses_the_launcher_name_and_restores_the_list_on_escape() {
+    let mut app = App {
+        view: View::Apps,
+        ..App::default()
+    };
+    let entry = |id: &str, name: &str| crate::desktop_apps::Entry {
+        id: id.into(),
+        name: name.into(),
+        comment: String::new(),
+        path: PathBuf::from(format!("/examples/{id}.desktop")),
+    };
+    assert!(app.apply_read(Response::DesktopApps(
+        0,
+        Ok(vec![
+            entry("org.example.Browser", "Web Browser"),
+            entry("org.example.Editor", "Editor"),
+        ]),
+    )));
+    assert_eq!(app.desktop_app_rows().count(), 2);
+
+    let now = Instant::now();
+    press(&mut app, "/BROWSER", now);
+    assert_eq!(app.selected_desktop_app().unwrap().name, "Web Browser");
+    assert_eq!(app.desktop_app_rows().count(), 1);
+
+    app.handle_key(KeyEvent::from(KeyCode::Esc), now);
+    assert_eq!(app.desktop_app_rows().count(), 2);
+}
+
+#[test]
+fn legacy_enter_repeats_stay_suppressed_after_a_launch_finishes() {
+    let mut app = App {
+        view: View::Apps,
+        ..App::default()
+    };
+    app.apply_read(Response::DesktopApps(
+        0,
+        Ok(vec![crate::desktop_apps::Entry {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            comment: String::new(),
+            path: PathBuf::from("/nonexistent/archoxide-test.desktop"),
+        }]),
+    ));
+
+    let start = Instant::now();
+    let enter = KeyEvent::from(KeyCode::Enter);
+    app.handle_key(enter, start);
+    assert!(app.desktop_apps.launching);
+    app.apply_read(Response::LaunchDesktopApp("Fixture".into(), Ok(())));
+
+    for elapsed in [660, 700, 740, 780, 820, 860, 900] {
+        app.handle_key(enter, start + Duration::from_millis(elapsed));
+        assert!(
+            !app.desktop_apps.launching,
+            "repeat at {elapsed}ms relaunched"
+        );
+    }
+
+    app.handle_key(enter, start + Duration::from_millis(1800));
+    assert!(app.desktop_apps.launching);
+}
+
+#[test]
+fn package_details_take_focus_on_a_narrow_terminal() {
+    let mut app = App::default();
+    app.apply_read(Response::Inventory(
+        0,
+        Ok(Inventory {
+            packages: vec![installed_package(
+                "fixture",
+                "1.0-1",
+                Availability::Repository,
+            )],
+            warning: None,
+        }),
+    ));
+    app.update_layout(6, false);
+    let now = Instant::now();
+
+    press(&mut app, "l", now);
+    assert_eq!(app.focus, Pane::Details);
+    press(&mut app, "h", now);
+    assert_eq!(app.focus, Pane::List);
+}
+
+#[test]
+fn package_details_reject_results_for_a_previously_selected_package() {
+    let mut app = App::default();
+    app.apply_read(Response::Inventory(
+        0,
+        Ok(Inventory {
+            packages: vec![
+                installed_package("first", "1.0-1", Availability::Repository),
+                installed_package("second", "2.0-1", Availability::Foreign),
+            ],
+            warning: None,
+        }),
+    ));
+    app.update_layout(6, true);
+    let first = app.package_details.revision;
+
+    press(&mut app, "j", Instant::now());
+    app.update_layout(6, true);
+    let second = app.package_details.revision;
+    assert_ne!(first, second);
+    assert!(!app.apply_read(Response::PackageInfo(first, Ok("Name: first".into()))));
+    assert!(matches!(
+        app.package_details.info,
+        Some(PackageInfo::Loading)
+    ));
+    assert!(app.apply_read(Response::PackageInfo(second, Ok("Name: second".into()))));
+    assert!(matches!(
+        &app.package_details.info,
+        Some(PackageInfo::Ready(info)) if info == "Name: second"
+    ));
+}
+
+#[test]
+fn package_details_can_scroll_to_the_last_wrapped_field() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut app = App::default();
+    app.apply_read(Response::Inventory(
+        0,
+        Ok(Inventory {
+            packages: vec![installed_package(
+                "fixture",
+                "1.0-1",
+                Availability::Repository,
+            )],
+            warning: None,
+        }),
+    ));
+    let now = Instant::now();
+    press(&mut app, "l", now);
+    let mut terminal = Terminal::new(TestBackend::new(42, 14)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+
+    let metadata = "Description : The selected package provides a long description that must wrap more than once in a narrow terminal.\n"
+        .repeat(8)
+        + "Validated By : Signature";
+    app.apply_read(Response::PackageInfo(
+        app.package_details.revision,
+        Ok(metadata),
+    ));
+
+    let mut render = |app: &mut App| {
+        terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let top = render(&mut app);
+    assert!(top.contains("Description"));
+    assert!(!top.contains("Validated By"));
+    assert!(!top.contains("Packages"));
+
+    press(&mut app, "G", now);
+    assert!(render(&mut app).contains("Validated By : Signature"));
+    assert!(app.details_scroll() > 0);
+    assert_eq!(app.selected_installed().unwrap().name, "fixture");
+
+    press(&mut app, "gg", now);
+    assert_eq!(app.details_scroll(), 0);
+    assert!(render(&mut app).contains("Description"));
 }

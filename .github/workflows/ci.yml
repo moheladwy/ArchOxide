@@ -117,3 +117,6 @@ jobs:
 
                   print("ArchOxide rendered Installed, answered a transaction prompt in the popup, and restored the terminal on quit.")
                   PY
+
+            - name: Verify desktop launching in a pseudo-terminal
+              run: python3 tests/smoke/desktop_apps.py

@@ -1,9 +1,11 @@
 mod app;
 mod appimage;
 mod config;
+mod desktop_apps;
 mod flatpak;
 mod fonts;
 mod input;
+mod package_details;
 mod packages;
 mod picker;
 mod pty;

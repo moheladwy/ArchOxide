@@ -22,7 +22,7 @@ impl App {
         })
     }
 
-    fn source_filter(&self, field: Field, committed: &str) -> String {
+    pub(super) fn source_filter(&self, field: Field, committed: &str) -> String {
         self.draft
             .as_ref()
             .filter(|draft| draft.field == field)

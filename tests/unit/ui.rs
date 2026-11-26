@@ -22,7 +22,7 @@ fn render(app: &mut App, width: u16, height: u16) -> String {
 }
 
 #[test]
-fn details_pane_appears_only_when_it_fits() {
+fn split_details_pane_appears_only_when_it_fits() {
     let mut app = App::default();
     let wide = render(&mut app, 100, 24);
     assert!(wide.contains("ArchOxide"));
@@ -32,7 +32,8 @@ fn details_pane_appears_only_when_it_fits() {
     let narrow = render(&mut app, 40, 14);
     assert!(narrow.contains("Packages"));
     assert!(narrow.contains("? Help"));
-    assert!(!narrow.contains("Details"));
+    assert!(narrow.contains("l Details"));
+    assert!(!narrow.contains("┌ Details "));
 
     let tiny = render(&mut app, 12, 2);
     assert!(tiny.contains("ArchOxide"));
@@ -99,4 +100,59 @@ fn saved_theme_and_layout_control_the_rendered_view() {
         package_row("test", "1", "extra", false, false, palette).height(),
         1
     );
+}
+
+#[test]
+fn search_rows_keep_names_left_and_sources_at_the_right_edge() {
+    let palette = Palette::new(Theme::Light);
+    let cases = [
+        ("firefox", Source::Repository("extra".into()), "Pacman"),
+        ("firefox-bin", Source::Aur, "AUR"),
+        (
+            "Firefox",
+            Source::Flatpak {
+                installation: flatpak::Installation::User,
+                remote: "flathub".into(),
+                reference: "app/org.mozilla.firefox/x86_64/stable".into(),
+            },
+            "Flatpak",
+        ),
+        (
+            "A very long AppImage package name",
+            Source::AppImageImport("https://example.org/demo.AppImage".into()),
+            "AppImage",
+        ),
+    ];
+    for comfortable in [false, true] {
+        for width in [20_u16, 50] {
+            for (name, source, label) in &cases {
+                let package = SearchResult {
+                    name: (*name).into(),
+                    version: "1.0".into(),
+                    source: source.clone(),
+                    description: String::new(),
+                };
+                let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        frame.render_widget(
+                            List::new([search_row(&package, width, comfortable, palette)]),
+                            frame.area(),
+                        );
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let first: String = buffer.content[..usize::from(width)]
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(first.starts_with(name.split_whitespace().next().unwrap()));
+                assert!(first.ends_with(*label));
+                assert_eq!(
+                    search_row(&package, width, comfortable, palette).height(),
+                    if comfortable { 2 } else { 1 }
+                );
+            }
+        }
+    }
 }

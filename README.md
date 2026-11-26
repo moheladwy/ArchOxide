@@ -9,8 +9,9 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 ## Package sources and settings
 
 - **Installed packages.** Filter the inventory by name, version, or availability. The Foreign label means a package is absent from the configured repository databases.
-- **Search and package changes.** Search by name or description, install a result from its displayed source, remove selected packages, and update all packages, only selected packages, or all except selected packages. Package-manager prompts remain interactive, including build review when `yay` offers it. Repository features also work without `yay`.
+- **Search and package changes.** Search Pacman repositories, AUR, configured Flatpak remotes, and managed AppImages together. Every result shows the package name on the left and the source type on the right. The result details show the repository or the Flatpak remote and installation scope. Install a result from its displayed source, remove selected packages, and update all packages, only selected packages, or all except selected packages. Package-manager prompts remain interactive, including build review when `yay` offers it. Repository features also work without `yay`.
 - **Flatpak and AppImages.** Manage apps using configured Flatpak installations or import AppImages from local files and direct HTTPS downloads.
+- **Apps.** Browse and open desktop launchers from your session’s XDG application directories, including Flatpak exports on its data path. Opening apps uses `gio` from the `glib2` package on Arch Linux.
 - **Settings.** Preview 18 themes, including all 15 DWM Titus palettes. Choose an installed font family, set its size, adjust row density and details width, and toggle AUR, Flatpak, or AppImages support.
 
 ## Keys
@@ -20,17 +21,24 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 | `Tab` / `Shift+Tab` | Switch views. `Alt+Tab` and `Alt+Shift+Tab` also work when forwarded by the terminal. |
 | `j` / `k`, `Ctrl+u` / `Ctrl+d` | Move by a row or half a page. |
 | `gg` / `G`, `Ctrl+Home` / `Ctrl+End` | Jump to the first or last row. |
-| `h` / `l`, `Ctrl+h` / `Ctrl+l` | Focus the list or details pane when both are visible. |
+| `h` / `l`, `Ctrl+h` / `Ctrl+l` | Return to the list or focus Details. On narrow terminals, Details takes the full width for packages. |
 | `/`, `a`, `R` | Filter an installed list or edit the search query. In Installed, `a` cycles availability. `R` reloads inventories and Flatpak search results. |
 | `i`, `d` | Install the selected result or remove the selected items in an installed list. |
 | `Space u`, `u`, `U` | Update all apps in the current source, update selected apps, or update all except selected apps. Use `u` and `U` in an installed list. |
 | `x`, `X` | Toggle the highlighted app’s mark or clear all marks in the current installed list. |
 | `Space e`, `Space f f`, `Space f t` | Open Installed, focus Search, or select Theme in Settings. |
-| `Space p`, `Space a` | Open Flatpak or AppImages. |
+| `Space p`, `Space a`, `Space o` | Open Flatpak, AppImages, or Apps. |
 | `f`, `Esc` | Search Flatpak remotes or return to installed Flatpaks from the results. |
 | `i`, `e` in AppImages | Import an AppImage or replace the highlighted managed copy. |
-| `Enter`, `s`, `r` | Edit the selected setting, save changes, or load defaults into the draft. |
+| `Enter` | Open the selected desktop app in Apps or edit the selected setting in Settings. |
+| `s`, `r` | In Settings, save changes or load defaults into the draft. |
 | `?`, `Space q` | Show keybinding help or quit. |
+
+## Package details
+
+Highlight a package to load its full record in **Details**. Installed Arch packages use `pacman -Qi`, repository search results use `pacman -Si`, and AUR results use `yay -Si --aur`. Flatpak details come from the selected installation and remote. AppImages show their saved source and available local file information.
+
+Press `l` to focus Details, then use `j`/`k` to scroll, `Ctrl+u`/`Ctrl+d` to move by half a page, or `gg`/`G` to jump to the start or end. Press `h` or `Esc` to return to the list.
 
 ## Package transactions
 
@@ -41,6 +49,8 @@ Confirmed installs, removals, and updates open a terminal popup with live output
 For Arch packages, a selected upgrade uses the cached repository databases. Updating all except selected refreshes those databases and applies exclusions for that run. Both modes preserve package-manager dependency checks. Arch supports full system upgrades, and selective upgrades can leave dependencies out of sync. [Pacman manual](https://man.archlinux.org/man/pacman.8), [Arch system maintenance](https://wiki.archlinux.org/title/System_maintenance#Partial_upgrades_are_unsupported)
 
 ## Flatpak and AppImages
+
+The unified **Search** tab respects the AUR, Flatpak, and AppImage switches in Settings. AppImage name searches find installed managed copies. Submit an existing local `.AppImage` path or direct HTTPS URL to find an importable AppImage. Press `i` and confirm to import it.
 
 - In **Flatpak**, press `/` to filter installed apps or `f` to search configured remotes. Press `i` on a result to install it in the displayed scope, or `Esc` to return to installed apps. Removals target each app’s full reference within its installation. [Flatpak command reference](https://docs.flatpak.org/en/latest/flatpak-command-reference.html#flatpak-uninstall)
 - In **AppImages**, press `i` and enter a local file path or direct HTTPS download URL. ArchOxide stores managed copies under `$XDG_DATA_HOME/archoxide/appimages` (default `~/.local/share/archoxide/appimages`). Press `/` to filter managed files, `u` to refresh from the saved source, `e` to replace one from a new source, or `d` to remove selected managed copies. If a download link changes for each release, use `e` with the new link. [AppImage distribution guide](https://docs.appimage.org/packaging-guide/distribution.html)

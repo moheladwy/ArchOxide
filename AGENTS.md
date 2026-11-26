@@ -1,6 +1,6 @@
 # ArchOxide
 
-ArchOxide is a keyboard-driven TUI for managing Arch Linux packages, Flatpak apps, and managed AppImages. Use `pacman` for configured repositories, `yay` for optional AUR support, and `flatpak` for configured Flatpak installations. AppImages use local files or direct HTTPS sources. Preserve source identity and scope when building install, removal, or update operations.
+ArchOxide is a keyboard-driven TUI for managing Arch Linux packages, Flatpak apps, and managed AppImages. Use `pacman` for configured repositories, `yay` for optional AUR support, and `flatpak` for configured Flatpak installations. AppImages use local files or direct HTTPS sources. Preserve source identity and scope when building install, removal, or update operations. Unified Search must honor enabled sources, keep source-specific results distinct, and dispatch through the corresponding native transaction. AppImage search covers managed entries and explicit local or HTTPS imports; it does not assume a remote catalog.
 
 Use Neovim-style navigation with defaults adapted from the maintainer’s AstroNvim setup. `gg` and `Ctrl+Home` jump to the first row. `G` and `Ctrl+End` jump to the last row. Persist themes, layout, fonts, and package source switches in `$XDG_CONFIG_HOME/archoxide/config.toml` with the `~/.config` fallback. Fontconfig provides the font picker, and `--kitty` applies the saved terminal font on launch.
 

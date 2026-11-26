@@ -17,7 +17,13 @@ use crate::{
     source_views::Sources,
 };
 
+mod desktop_actions;
+mod package_details;
 mod source_actions;
+
+use desktop_actions::DesktopApps;
+pub use package_details::Info as PackageInfo;
+use package_details::PackageDetails;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {
@@ -26,15 +32,17 @@ pub enum View {
     Search,
     Flatpak,
     AppImages,
+    Apps,
     Settings,
 }
 
 impl View {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Installed,
         Self::Search,
         Self::Flatpak,
         Self::AppImages,
+        Self::Apps,
         Self::Settings,
     ];
 
@@ -44,8 +52,16 @@ impl View {
             Self::Search => "Search",
             Self::Flatpak => "Flatpak",
             Self::AppImages => "AppImages",
+            Self::Apps => "Apps",
             Self::Settings => "Settings",
         }
+    }
+
+    pub fn has_package_details(self) -> bool {
+        matches!(
+            self,
+            Self::Installed | Self::Search | Self::Flatpak | Self::AppImages
+        )
     }
 
     fn index(self) -> usize {
@@ -147,6 +163,7 @@ enum Field {
     FlatpakFilter,
     FlatpakSearch,
     ImageFilter,
+    DesktopAppFilter,
     ImageImport,
     ImageReplace,
     Setting(Setting),
@@ -174,6 +191,8 @@ pub struct App {
     pub config: Config,
     pub picker: Option<Picker>,
     pub sources: Sources,
+    pub desktop_apps: DesktopApps,
+    pub package_details: PackageDetails,
     config_path: Option<PathBuf>,
     settings: Config,
     pub installed_state: ReadState,
@@ -185,8 +204,9 @@ pub struct App {
     filter: String,
     pub query: String,
     pub yay_available: bool,
-    search_results: [Vec<SearchResult>; 2],
-    pub search_states: [ReadState; 2],
+    search_results: [Vec<SearchResult>; SEARCH_SOURCES.len()],
+    search_order: Vec<(usize, usize)>,
+    pub search_states: [ReadState; SEARCH_SOURCES.len()],
     search_selection: Option<(Source, String)>,
     draft: Option<Draft>,
     details_visible: bool,
@@ -231,18 +251,15 @@ impl App {
 
     pub fn transaction_finished(&mut self, message: String, transaction: &Transaction) {
         self.notice = Some(message);
+        self.sync_package_details(false);
         match transaction {
-            Transaction::Flatpak(_) => {
-                self.refresh_flatpak_inventory();
-                return;
-            }
-            Transaction::AppImage(_) => {
-                self.refresh_image_inventory();
-                return;
-            }
-            _ => {}
+            Transaction::Flatpak(_) => self.refresh_flatpak_inventory(),
+            Transaction::AppImage(_) => self.refresh_image_inventory(),
+            _ => self.refresh_inventory(),
         }
-        self.refresh_inventory();
+        if self.desktop_apps.state != ReadState::Idle {
+            self.refresh_desktop_apps();
+        }
         if self.view == View::Search {
             self.refresh_search();
         } else if !self.query.is_empty() {
@@ -266,7 +283,9 @@ impl App {
     }
 
     pub fn search_rows(&self) -> impl Iterator<Item = &SearchResult> + '_ {
-        self.search_results.iter().flatten()
+        self.search_order
+            .iter()
+            .map(|&(source, row)| &self.search_results[source][row])
     }
 
     pub fn selected_installed(&self) -> Option<&InstalledPackage> {
@@ -359,6 +378,7 @@ impl App {
                 Field::FlatpakFilter => "Filter installed Flatpaks",
                 Field::FlatpakSearch => "Search Flatpak remotes",
                 Field::ImageFilter => "Filter managed AppImages",
+                Field::DesktopAppFilter => "Filter desktop apps",
                 Field::ImageImport => "Import AppImage from a path or HTTPS URL",
                 Field::ImageReplace => "Replace AppImage from a path or HTTPS URL",
                 Field::Setting(Setting::DetailsWidth) => "Details width (%)",
@@ -375,6 +395,7 @@ impl App {
                 None => Some(("Filter installed Flatpaks", &self.sources.flatpaks.filter)),
             },
             View::AppImages => Some(("Filter managed AppImages", &self.sources.images.filter)),
+            View::Apps => Some(("Filter desktop apps", &self.desktop_apps.filter)),
             View::Settings => None,
         }
     }
@@ -390,10 +411,13 @@ impl App {
             self.focus = Pane::List;
         }
         self.clamp_selection(self.view);
+        self.sync_package_details(details_visible);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, now: Instant) {
-        if key.kind == KeyEventKind::Release {
+        if key.kind == KeyEventKind::Release
+            || (self.view == View::Apps && !self.desktop_apps.accept_key(key, now))
+        {
             return;
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
@@ -457,13 +481,21 @@ impl App {
         }
         if key.code == KeyCode::Esc && self.bindings.pending_label().is_none() {
             self.notice = None;
+            if self.focus == Pane::Details && self.view.has_package_details() {
+                self.focus = Pane::List;
+                return;
+            }
             if self.view == View::Flatpak && self.sources.flatpak_query.is_some() {
                 self.leave_flatpak_search();
                 return;
             }
         }
         if let Some(action) = self.bindings.resolve(key, now)
-            && (action != Action::ToggleMark || key.kind == KeyEventKind::Press)
+            && (key.kind == KeyEventKind::Press
+                || !matches!(
+                    (action, self.view),
+                    (Action::ToggleMark, _) | (Action::Activate, View::Apps)
+                ))
         {
             self.apply_action(action);
         }
@@ -502,11 +534,13 @@ impl App {
                     }
                     Field::Search => {
                         self.query = draft.text.trim().to_owned();
+                        self.search_selection = None;
                         self.refresh_search();
                     }
                     Field::FlatpakFilter => self.sources.flatpaks.filter = draft.text,
                     Field::FlatpakSearch => self.search_flatpaks(draft.text),
                     Field::ImageFilter => self.sources.images.filter = draft.text,
+                    Field::DesktopAppFilter => self.desktop_apps.filter = draft.text,
                     Field::ImageImport | Field::ImageReplace => {
                         self.confirm_image_source(draft.field, draft.text)
                     }
@@ -527,6 +561,9 @@ impl App {
     }
 
     fn apply_action(&mut self, action: Action) {
+        if action == Action::RefreshInventory {
+            self.sync_package_details(false);
+        }
         match action {
             Action::Quit => self.should_quit = true,
             Action::Help => {
@@ -538,6 +575,7 @@ impl App {
             Action::Installed => self.open(View::Installed),
             Action::Flatpak => self.open(View::Flatpak),
             Action::AppImages => self.open(View::AppImages),
+            Action::Apps => self.open(View::Apps),
             Action::Search => {
                 self.open(View::Search);
                 self.open_prompt();
@@ -548,11 +586,19 @@ impl App {
             }
             Action::Prompt => self.open_prompt(),
             Action::FocusList => self.focus = Pane::List,
-            Action::FocusDetails if self.details_visible => self.focus = Pane::Details,
+            Action::FocusDetails if self.details_visible || self.view.has_package_details() => {
+                self.focus = Pane::Details;
+            }
             Action::CycleAvailability if self.view == View::Installed => self.cycle_availability(),
             Action::RefreshInventory if self.view == View::Installed => self.refresh_inventory(),
+            Action::RefreshInventory if self.view == View::Apps => self.refresh_desktop_apps(),
             Action::Install if self.view == View::Search => {
-                self.confirmation = self.selected_result().cloned().map(Transaction::Install);
+                if let Some(result) = self.selected_result() {
+                    match result.install_transaction() {
+                        Ok(transaction) => self.confirmation = Some(transaction),
+                        Err(error) => self.notice = Some(error),
+                    }
+                }
             }
             Action::Remove
                 if self.view == View::Installed && self.installed_state == ReadState::Ready =>
@@ -568,7 +614,9 @@ impl App {
                     self.confirmation = Some(Transaction::Remove(names));
                 }
             }
-            Action::Upgrade if !matches!(self.view, View::Flatpak | View::AppImages) => {
+            Action::Upgrade
+                if matches!(self.view, View::Installed | View::Search | View::Settings) =>
+            {
                 self.confirmation = Some(Transaction::Upgrade {
                     aur: self.aur_enabled(),
                 })
@@ -585,7 +633,8 @@ impl App {
             Action::UpgradeSelected | Action::UpgradeExcept if self.view == View::Installed => {
                 self.confirm_scoped_upgrade(action == Action::UpgradeExcept);
             }
-            Action::EditSetting if self.view == View::Settings => {
+            Action::Activate if self.view == View::Apps => self.launch_selected_desktop_app(),
+            Action::Activate if self.view == View::Settings => {
                 if let Some(setting) = self.selected_setting() {
                     self.edit_setting(setting);
                 }
@@ -593,8 +642,14 @@ impl App {
             Action::SaveSettings if self.view == View::Settings => self.save_settings(),
             Action::ResetSettings if self.view == View::Settings => self.reset_settings(),
             _ => {
-                if !self.apply_source_action(action) && self.focus == Pane::List {
-                    self.navigate(action, self.row_count(self.view));
+                if !self.apply_source_action(action) {
+                    match self.focus {
+                        Pane::List => self.navigate(action, self.row_count(self.view)),
+                        Pane::Details if self.view.has_package_details() => {
+                            self.scroll_package_details(action);
+                        }
+                        Pane::Details => {}
+                    }
                 }
             }
         }
@@ -612,6 +667,9 @@ impl App {
         self.focus = Pane::List;
         self.clamp_selection(view);
         self.open_source(view);
+        if view == View::Apps && self.desktop_apps.state == ReadState::Idle {
+            self.refresh_desktop_apps();
+        }
         if view == View::Search
             && !self.query.is_empty()
             && self.search_states[0] == ReadState::Idle
@@ -696,6 +754,7 @@ impl App {
                 None => (Field::FlatpakFilter, self.sources.flatpaks.filter.clone()),
             },
             View::AppImages => (Field::ImageFilter, self.sources.images.filter.clone()),
+            View::Apps => (Field::DesktopAppFilter, self.desktop_apps.filter.clone()),
             View::Settings => return,
         };
         self.draft = Some(Draft { field, text });
@@ -705,12 +764,13 @@ impl App {
     fn row_count(&self, view: View) -> usize {
         match view {
             View::Installed => self.visible_installed.len(),
-            View::Search => self.search_results.iter().map(Vec::len).sum(),
+            View::Search => self.search_order.len(),
             View::Flatpak if self.sources.flatpak_query.is_some() => {
                 self.sources.flatpak_results.len()
             }
             View::Flatpak => self.flatpak_rows().count(),
             View::AppImages => self.image_rows().count(),
+            View::Apps => self.desktop_app_rows().count(),
             View::Settings => Setting::ALL.len(),
         }
     }
@@ -740,7 +800,9 @@ impl App {
         };
         selection.select(Some(next.min(last)));
         if self.view == View::Search {
-            self.search_selection = None;
+            self.search_selection = self
+                .selected_result()
+                .map(|package| (package.source.clone(), package.name.clone()));
         }
     }
 
@@ -798,24 +860,31 @@ impl App {
     }
 
     fn invalidate_search(&mut self) {
+        if self.view == View::Search {
+            self.sync_package_details(false);
+        }
         self.search_id = self.search_id.wrapping_add(1);
         self.reads.clear_queued_searches();
         self.search_results = Default::default();
+        self.search_order.clear();
         self.search_states = Default::default();
         self.selections[View::Search.index()].select(None);
     }
 
     fn refresh_search(&mut self) {
-        if let Some(package) = self.selected_result() {
-            self.search_selection = Some((package.source.clone(), package.name.clone()));
-        }
         self.invalidate_search();
         if self.query.is_empty() {
             self.search_selection = None;
             return;
         }
         for source in SEARCH_SOURCES {
-            if source == SearchSource::Aur && !self.aur_enabled() {
+            let enabled = match source {
+                SearchSource::Repository => true,
+                SearchSource::Aur => self.aur_enabled(),
+                SearchSource::Flatpak => self.config.packages.flatpak_enabled,
+                SearchSource::AppImage => self.config.packages.appimage_enabled,
+            };
+            if !enabled {
                 continue;
             }
             self.search_states[search_index(source)] = ReadState::Loading;
@@ -855,9 +924,6 @@ impl App {
             }
             Response::Search(source, id, result) if id == self.search_id => {
                 let slot = search_index(source);
-                let selected = self
-                    .selected_result()
-                    .map(|package| (package.source.clone(), package.name.clone()));
                 match result {
                     Ok(packages) => {
                         self.search_results[slot] = packages;
@@ -869,13 +935,24 @@ impl App {
                     }
                 }
 
-                let position = |(source, name): &(Source, String)| {
+                let query = self.query.to_lowercase();
+                let mut order: Vec<_> = self
+                    .search_results
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(source, rows)| (0..rows.len()).map(move |row| (source, row)))
+                    .collect();
+                // Stable sorting keeps source and backend order for equally relevant matches.
+                order.sort_by_cached_key(|&(source, row)| {
+                    self.search_results[source][row].match_rank(&query)
+                });
+                self.search_order = order;
+
+                let retained = self.search_selection.as_ref().and_then(|(source, name)| {
                     self.search_rows()
                         .position(|package| &package.source == source && &package.name == name)
-                };
-                let preferred = self.search_selection.as_ref().and_then(position);
-                let retained = preferred.or_else(|| selected.as_ref().and_then(position));
-                if preferred.is_some() || !self.search_states.contains(&ReadState::Loading) {
+                });
+                if retained.is_none() && !self.search_states.contains(&ReadState::Loading) {
                     self.search_selection = None;
                 }
                 self.selections[View::Search.index()].select(retained);
@@ -893,6 +970,25 @@ impl App {
                 } else {
                     false
                 }
+            }
+            Response::DesktopApps(id, result) if id == self.desktop_apps.revision => {
+                self.load_desktop_apps(result);
+                true
+            }
+            Response::LaunchDesktopApp(name, result) => {
+                self.desktop_apps.launching = false;
+                self.notice = Some(match result {
+                    Ok(()) => format!("Opened {name}."),
+                    Err(error) => error,
+                });
+                true
+            }
+            Response::PackageInfo(id, result) if id == self.package_details.revision => {
+                self.package_details.info = Some(match result {
+                    Ok(info) => PackageInfo::Ready(info),
+                    Err(error) => PackageInfo::Failed(error),
+                });
+                true
             }
             response => self.apply_source_read(response),
         }
@@ -982,6 +1078,9 @@ impl App {
         }
 
         let refresh_aur = self.config.packages.aur_enabled != self.settings.packages.aur_enabled;
+        let refresh_search = refresh_aur
+            || self.config.packages.flatpak_enabled != self.settings.packages.flatpak_enabled
+            || self.config.packages.appimage_enabled != self.settings.packages.appimage_enabled;
         let disable_flatpak =
             self.config.packages.flatpak_enabled && !self.settings.packages.flatpak_enabled;
         let disable_images =
@@ -1009,6 +1108,8 @@ impl App {
         );
         if refresh_aur {
             self.yay_available = packages::yay_available();
+        }
+        if refresh_search {
             self.refresh_search();
         }
     }

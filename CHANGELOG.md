@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Unified Search across Pacman, AUR, configured Flatpak remotes, and managed AppImages; added explicit source labels and source-aware installs, including direct AppImage imports.
+
 - Documented the initial Arch Linux package management TUI scope, including installed-package filters, repository and AUR search and transactions, Neovim-style navigation, and persistent appearance and package settings.
 - Recorded the implementation milestones in the [MVP plan](.github/plans/2026-11-26-archoxide-mvp.md).
 - Added the TUI shell with Installed, Search, and Settings views, Neovim-style navigation, and a keybinding help overlay.

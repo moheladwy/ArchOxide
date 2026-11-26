@@ -245,3 +245,44 @@ fn rejects_invalid_transaction_targets() {
         assert!(Transaction::Install(package).native_command().is_err());
     }
 }
+
+#[test]
+fn unified_install_preserves_flatpak_scope_and_appimage_source() {
+    let result = SearchResult::from(flatpak::SearchApp {
+        id: "org.example.Demo".into(),
+        name: "Demo".into(),
+        version: "1".into(),
+        branch: "stable".into(),
+        reference: "app/org.example.Demo/x86_64/stable".into(),
+        description: "Example".into(),
+        remote: "flathub".into(),
+        installation: flatpak::Installation::Named("work".into()),
+    });
+    assert_eq!(result.source.label(), "Flatpak");
+    let transaction = result.install_transaction().unwrap();
+    let commands = transaction.commands().unwrap();
+    assert_eq!(commands[0].get_program(), "flatpak");
+    assert!(commands[0].get_args().eq([
+        "install",
+        "--installation=work",
+        "--",
+        "flathub",
+        "app/org.example.Demo/x86_64/stable",
+    ]));
+    let image = SearchResult {
+        name: "Demo".into(),
+        version: String::new(),
+        source: Source::AppImageImport("https://example.org/Demo.AppImage".into()),
+        description: String::new(),
+    };
+    assert!(matches!(
+        image.install_transaction().unwrap(),
+        Transaction::AppImage(appimage::Operation::Import(url))
+            if url == "https://example.org/Demo.AppImage"
+    ));
+    let managed = SearchResult {
+        source: Source::ManagedAppImage(PathBuf::from("/managed/Demo.AppImage")),
+        ..image
+    };
+    assert!(managed.install_transaction().is_err());
+}
