@@ -146,7 +146,7 @@ fn search_rows_keep_names_left_and_sources_at_the_right_edge() {
                     .map(|cell| cell.symbol())
                     .collect();
                 assert!(first.starts_with(name.split_whitespace().next().unwrap()));
-                assert!(first.ends_with(label));
+                assert!(first.ends_with(*label));
                 assert_eq!(
                     search_row(&package, width, comfortable, palette).height(),
                     if comfortable { 2 } else { 1 }
