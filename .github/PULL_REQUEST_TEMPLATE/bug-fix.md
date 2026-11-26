@@ -1,6 +1,6 @@
 ## Bug and fix
 
-<!-- Describe the symptom, what caused it, and how this change fixes it. -->
+<!-- Describe the symptom, what caused it, and how this change fixes it. Include the affected view and package source or installation scope when relevant. -->
 
 ## Related issues
 
@@ -8,4 +8,4 @@
 
 ## Regression verification
 
-<!-- Describe how to reproduce the original failure and how you verified the fix. Include relevant tests or terminal steps. -->
+<!-- Give the original reproduction and the steps that now succeed. For an operation popup issue, include the relevant prompt, exit status, or terminal resize. -->

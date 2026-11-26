@@ -6,11 +6,12 @@ ArchOxide is a keyboard-driven terminal UI for managing Arch Linux packages from
 
 Run `cargo run --locked` from an interactive terminal on Arch Linux as your regular user. ArchOxide uses `pacman` to read configured repositories and `sudo` for repository transactions. Install `yay` for AUR support, `flatpak` for Flatpak apps, `curl` for HTTPS AppImages, and Fontconfig for the installed font picker. `cargo run --locked -- --kitty` opens a dedicated Kitty window with the saved font settings.
 
-## MVP
+## Package sources and settings
 
 - **Installed packages.** Filter the inventory by name, version, or availability. The Foreign label means a package is absent from the configured repository databases.
 - **Search and package changes.** Search by name or description, install a result from its displayed source, remove an installed package, and update all packages, only selected packages, or all except selected packages. Package-manager prompts remain interactive, including build review when `yay` offers it. Repository features also work without `yay`.
-- **Settings.** Preview and pick from 18 themes, including all 15 DWM Titus palettes. Pick an installed font family, set its size, and adjust row density, details width, and AUR support.
+- **Flatpak and AppImages.** Manage apps using configured Flatpak installations or import AppImages from local files and direct HTTPS downloads.
+- **Settings.** Preview 18 themes, including all 15 DWM Titus palettes. Choose an installed font family, set its size, adjust row density and details width, and toggle AUR, Flatpak, or AppImages support.
 
 ## Keys
 
@@ -20,20 +21,24 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 | `j` / `k`, `Ctrl+u` / `Ctrl+d` | Move by a row or half a page. |
 | `gg` / `G`, `Ctrl+Home` / `Ctrl+End` | Jump to the first or last row. |
 | `h` / `l`, `Ctrl+h` / `Ctrl+l` | Focus the list or details pane when both are visible. |
-| `/`, `a`, `R` | Filter Installed or open Search. In Installed, `a` cycles availability and `R` reloads the list. |
+| `/`, `a`, `R` | Filter an installed list or edit the search query. In Installed, `a` cycles availability. `R` reloads inventories and Flatpak search results. |
 | `i`, `d` | Install the selected result or remove the highlighted installed package. |
 | `Space u`, `u`, `U` | Update all apps in the current source, update selected apps, or update all except selected apps. Use `u` and `U` in an installed list. |
 | `x`, `X` | Toggle the highlighted app’s mark or clear all marks in the current installed list. |
 | `Space e`, `Space f f`, `Space f t` | Open Installed, focus Search, or select Theme in Settings. |
 | `Space p`, `Space a` | Open Flatpak or AppImages. |
+| `f`, `Esc` | Search Flatpak remotes or return to installed Flatpaks from the results. |
+| `i`, `e` in AppImages | Import an AppImage or replace the highlighted managed copy. |
 | `Enter`, `s`, `r` | Edit the selected setting, save changes, or load defaults into the draft. |
 | `?`, `Space q` | Show keybinding help or quit. |
 
+## Package transactions
+
 In installed lists, `u` and `U` use the marked items, or the highlighted row when there are no marks. Marks survive filtering. Press `Enter` to confirm a transaction or `Esc` to cancel.
 
-Confirmed installs, removals, and updates open a terminal popup with live output. Answer package-manager prompts directly in the popup. Use `Ctrl+C` to interrupt an interactive command and `Shift+PgUp` or `Shift+PgDn` to scroll. Press `Enter` or `Esc` to close the popup after the operation finishes.
+Confirmed installs, removals, and updates open a terminal popup with live output. Answer package-manager prompts directly in the popup. AppImage operations report their progress in the same view. Use `Ctrl+C` to interrupt an interactive command and `Shift+PgUp` or `Shift+PgDn` to scroll while it runs. Once the operation finishes, use `PgUp` and `PgDn` to review output or `Enter` and `Esc` to close the popup.
 
-Updating selected packages uses the cached repository databases. Updating all except selected refreshes the databases and applies the exclusions for that run. Both modes preserve package-manager dependency checks. Arch supports full system upgrades, and selective upgrades can leave dependencies out of sync. [Pacman manual](https://man.archlinux.org/man/pacman.8), [Arch system maintenance](https://wiki.archlinux.org/title/System_maintenance#Partial_upgrades_are_unsupported)
+For Arch packages, a selected upgrade uses the cached repository databases. Updating all except selected refreshes those databases and applies exclusions for that run. Both modes preserve package-manager dependency checks. Arch supports full system upgrades, and selective upgrades can leave dependencies out of sync. [Pacman manual](https://man.archlinux.org/man/pacman.8), [Arch system maintenance](https://wiki.archlinux.org/title/System_maintenance#Partial_upgrades_are_unsupported)
 
 ## Flatpak and AppImages
 
@@ -64,11 +69,16 @@ Press `Enter` on **Flatpak support** or **AppImages support** to toggle that sou
 
 ## Development commands
 
-- `cargo run` builds and runs the TUI.
+- `cargo run --locked` builds and runs the TUI in an interactive terminal.
+- `cargo build --locked` builds the binary using the checked-in dependency versions.
 - `cargo fmt --check` verifies formatting.
-- `cargo clippy --all-targets` checks the application and its tests for lint warnings.
-- `cargo test` runs the test suite.
+- `cargo clippy --locked --all-targets -- -D warnings` checks the application and its tests for lint warnings.
+- `cargo test --locked` runs the test suite.
+
+The [CI workflow](.github/workflows/ci.yml) runs on pull requests and on pushes to `main` that touch source files, the workflow, or Cargo metadata. Its smoke test drives a fixture transaction through the terminal popup.
 
 ## Contributing
 
-Choose the issue form that matches your report when opening an issue. New PRs start with a general template. For a focused PR description, add `template=bug-fix.md`, `template=feature.md`, `template=chore.md`, or `template=docs.md` to your branch’s compare URL. [GitHub pull request query parameters](https://docs.github.com/en/pull-requests/reference/using-query-parameters-to-create-a-pull-request)
+Choose the [issue form](.github/ISSUE_TEMPLATE) that matches your report. New PRs start with the [general template](.github/pull_request_template.md). For a focused PR description, add `template=bug-fix.md`, `template=feature.md`, `template=chore.md`, or `template=docs.md` to your branch’s compare URL. [GitHub pull request query parameters](https://docs.github.com/en/pull-requests/reference/using-query-parameters-to-create-a-pull-request)
+
+The [MVP plan](.github/plans/2026-11-26-archoxide-mvp.md) records the source layout, completed milestones, and verification checks.

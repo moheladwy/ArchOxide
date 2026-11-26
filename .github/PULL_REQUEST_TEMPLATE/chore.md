@@ -4,11 +4,11 @@
 
 ## Impact
 
-<!-- Note any effect on development commands, dependencies, CI, or runtime behavior. -->
+<!-- Note any effect on development commands, Cargo.lock, CI triggers, or terminal behavior. -->
 
 ## Verification
 
-<!-- List the checks you ran and their results. -->
+<!-- List the checks you ran and their results. For workflow changes, name the event or job you verified. -->
 
 ## Related issues
 

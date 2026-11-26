@@ -4,11 +4,11 @@
 
 ## Pages or sections
 
-<!-- Link the changed sections if useful for review. -->
+<!-- Link the changed sections and the commands, settings, or code they describe if useful for review. -->
 
 ## Verification
 
-<!-- Note which examples, commands, links, or rendered pages you checked. -->
+<!-- Note which links and rendered pages you checked. For keybinding or configuration examples, confirm they match the TUI and TOML defaults. -->
 
 ## Related issues
 
