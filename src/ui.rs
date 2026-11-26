@@ -27,19 +27,20 @@ const HELP: &[&str] = &[
     "Alt+Tab / Alt+Shift+Tab   Cycle views",
     "/                 Filter or search",
     "a                 Filter by availability",
-    "R                 Refresh Installed",
+    "R                 Refresh the current list",
     "i / d             Install / remove selection",
     "Space u           Update all packages",
     "u / U             Update selected / all except selected",
     "x / X             Toggle package mark / clear marks",
     "Space e           Open Installed",
     "Space p / Space a Open Flatpak / AppImages",
+    "Space o           Open desktop Apps",
     "f                 Search Flatpak remotes",
     "Esc               Return to installed Flatpaks",
     "i / e             Import / replace an AppImage",
     "Space f f         Open package search",
     "Space f t         Go to Theme",
-    "Enter             Edit selected setting",
+    "Enter             Open selected app or edit setting",
     "s / r             Save settings / reset draft",
     "Ctrl+u            Clear text in a prompt",
     "Space q / Ctrl+c  Quit",
@@ -112,7 +113,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let prompt = app.prompt();
     let prompt_height = if prompt.is_some() { 3 } else { 0 };
     let status = status_lines(app, palette);
-    let status_height = (status.len() as u16).min(area.height.saturating_sub(prompt_height + 4));
+    let wrap_status = app.view == View::Apps;
+    let status_rows = if wrap_status {
+        let width = usize::from(area.width);
+        status
+            .iter()
+            .map(|line| line.width().div_ceil(width).max(1))
+            .sum()
+    } else {
+        status.len()
+    };
+    let status_height = (status_rows as u16).min(area.height.saturating_sub(prompt_height + 4));
     let [header, input, content, status_area, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(prompt_height),
@@ -127,7 +138,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         draw_prompt(frame, input, title, text, app.editing(), palette);
     }
     draw_content(frame, app, content, palette);
-    frame.render_widget(Paragraph::new(status), status_area);
+    let status = Paragraph::new(status);
+    let status = if wrap_status {
+        status.wrap(Wrap { trim: true })
+    } else {
+        status
+    };
+    frame.render_widget(status, status_area);
     draw_footer(frame, app, footer, palette);
     if app.show_help {
         draw_help(frame, app, content, palette);
@@ -253,6 +270,7 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
         View::Flatpak if app.sources.flatpak_query.is_some() => "Flatpak results",
         View::Flatpak => "Installed Flatpaks",
         View::AppImages => "Managed AppImages",
+        View::Apps => "Desktop apps",
         View::Settings => "Preferences",
     };
     let base = palette.panel(title, has_details && app.focus == Pane::List);
@@ -334,6 +352,19 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
                 )
             })
             .collect(),
+        View::Apps => app
+            .desktop_app_rows()
+            .map(|entry| {
+                package_row(
+                    &one_line(&entry.name),
+                    "",
+                    &one_line(&entry.comment),
+                    false,
+                    comfortable,
+                    palette,
+                )
+            })
+            .collect(),
         View::Settings => Setting::ALL
             .into_iter()
             .map(|setting| {
@@ -387,6 +418,11 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
                 }
                 ReadState::Ready => "No managed AppImages match.",
                 ReadState::Failed(_) => "Managed AppImages could not be read.",
+            },
+            View::Apps => match app.desktop_apps.state {
+                ReadState::Idle | ReadState::Loading => "Reading desktop apps…",
+                ReadState::Ready => "No desktop apps match.",
+                ReadState::Failed(_) => "Desktop apps could not be read.",
             },
             View::Settings => "",
         };
@@ -574,6 +610,13 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) 
                 Line::raw(entry.origin.as_deref().unwrap_or("—")),
             ]
         }),
+        View::Apps => app.selected_desktop_app().map(|entry| {
+            vec![
+                Line::from(one_line(&entry.name)).bold(),
+                Line::raw(one_line(&entry.id)),
+                Line::raw(one_line(&entry.comment)),
+            ]
+        }),
         View::Settings => app.selected_setting().map(|setting| {
             vec![
                 Line::from(setting.label()).bold(),
@@ -678,6 +721,13 @@ fn status_lines(app: &App, palette: Palette) -> Vec<Line<'static>> {
             app.sources.images.marks.len(),
             palette,
         ),
+        View::Apps => app_source_status(
+            &mut lines,
+            &app.desktop_apps.state,
+            app.desktop_app_rows().count(),
+            0,
+            palette,
+        ),
         View::Settings if app.settings_dirty() => {
             lines.push(Line::raw(" Unsaved changes").fg(palette.accent));
         }
@@ -733,6 +783,7 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
             View::AppImages => {
                 " ? Help  i Import  e Replace  d Remove  u/U Update  Space u All  x Mark"
             }
+            View::Apps => " Enter Open  / Filter  R Refresh  Tab Views  ? Help",
             View::Settings => " ? Help  Enter Edit  s Save  r Reset  Tab Views",
         }
     };
