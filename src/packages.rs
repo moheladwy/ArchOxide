@@ -122,11 +122,9 @@ impl SearchResult {
                     },
                 )))
             }
-            Source::AppImageImport(input) => {
-                Ok(Transaction::AppImage(appimage::Operation::Import(
-                    input.clone(),
-                )))
-            }
+            Source::AppImageImport(input) => Ok(Transaction::AppImage(
+                appimage::Operation::Import(input.clone()),
+            )),
             Source::ManagedAppImage(_) => Err("This AppImage is already installed.".into()),
         }
     }

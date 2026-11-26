@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap},
 };
 use tui_term::widget::{Cursor, PseudoTerminal};
 
@@ -12,7 +12,7 @@ use crate::{
     appimage,
     config::{Density, Theme},
     flatpak,
-    packages::{Source, Transaction},
+    packages::{SearchResult, Source, Transaction},
     picker::{Kind as PickerKind, Picker},
     source_views::flatpak_key,
     transaction_terminal::{self, TransactionTerminal},
@@ -287,11 +287,9 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
         View::Search => app
             .search_rows()
             .map(|package| {
-                package_row(
-                    &format!("[{}] {}", package.source.label(), package.name),
-                    &package.version,
-                    &package.source.to_string(),
-                    false,
+                search_row(
+                    package,
+                    inner.width.saturating_sub(2),
                     comfortable,
                     palette,
                 )
@@ -410,7 +408,12 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
             List::new(rows)
                 .block(block)
                 .highlight_style(palette.highlight())
-                .highlight_symbol("› "),
+                .highlight_symbol("› ")
+                .highlight_spacing(if app.view == View::Search {
+                    HighlightSpacing::Always
+                } else {
+                    HighlightSpacing::WhenSelected
+                }),
             list_area,
             app.selection_mut(),
         );
@@ -459,6 +462,62 @@ fn package_row(
             metadata.fg(palette.muted),
         ]))
     }
+}
+
+// Reserve the right edge for the source type, even when a name is too long.
+fn search_row(
+    package: &SearchResult,
+    width: u16,
+    comfortable: bool,
+    palette: Palette,
+) -> ListItem<'static> {
+    let width = usize::from(width);
+    let source = package.source.label();
+    let left_width = width.saturating_sub(source.len() + 1);
+    let name = fit_search_text(&package.name, left_width);
+    let mut left = vec![Span::raw(name.clone())];
+    let mut used = Line::raw(name).width();
+    if !comfortable && !package.version.is_empty() {
+        let version = format!("  ·  {}", package.version);
+        let version = fit_search_text(&version, left_width.saturating_sub(used));
+        used += Line::raw(version.as_str()).width();
+        left.push(version.fg(palette.muted));
+    }
+    let gap = width.saturating_sub(used + source.len());
+    left.push(Span::raw(" ".repeat(gap)));
+    left.push(source.fg(palette.accent));
+    let first = Line::from(left);
+    if comfortable {
+        let metadata = if package.version.is_empty() {
+            package.source.to_string()
+        } else {
+            format!("{}  ·  {}", package.source, package.version)
+        };
+        ListItem::new(vec![first, Line::raw(metadata).fg(palette.muted)])
+    } else {
+        ListItem::new(first)
+    }
+}
+
+fn fit_search_text(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if Line::raw(text).width() <= width {
+        return text.to_owned();
+    }
+    let mut result = String::new();
+    let mut used = 0;
+    for character in text.chars() {
+        let character_width = Span::raw(character.to_string()).width();
+        if used + character_width >= width {
+            break;
+        }
+        result.push(character);
+        used += character_width;
+    }
+    result.push('…');
+    result
 }
 
 fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {

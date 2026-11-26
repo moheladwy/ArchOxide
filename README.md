@@ -9,7 +9,7 @@ Run `cargo run --locked` from an interactive terminal on Arch Linux as your regu
 ## Package sources and settings
 
 - **Installed packages.** Filter the inventory by name, version, or availability. The Foreign label means a package is absent from the configured repository databases.
-- **Search and package changes.** Search Pacman repositories, AUR, configured Flatpak remotes, and managed AppImages together. Every result shows its source (including repository or Flatpak remote and installation scope). Install a result from its displayed source, remove an installed package, and update all packages, only selected packages, or all except selected packages. Package-manager prompts remain interactive, including build review when `yay` offers it. Repository features also work without `yay`.
+- **Search and package changes.** Search Pacman repositories, AUR, configured Flatpak remotes, and managed AppImages together. Every result shows the package name on the left and the source type on the right; repository or Flatpak remote and installation scope remain in the result details. Install a result from its displayed source, remove an installed package, and update all packages, only selected packages, or all except selected packages. Package-manager prompts remain interactive, including build review when `yay` offers it. Repository features also work without `yay`.
 - **Flatpak and AppImages.** Manage apps using configured Flatpak installations or import AppImages from local files and direct HTTPS downloads.
 - **Settings.** Preview 18 themes, including all 15 DWM Titus palettes. Choose an installed font family, set its size, adjust row density and details width, and toggle AUR, Flatpak, or AppImages support.
 

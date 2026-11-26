@@ -66,7 +66,11 @@ pub fn search(query: &str) -> Result<Vec<SearchResult>, String> {
                     .origin
                     .as_ref()
                     .is_some_and(|origin| origin.to_lowercase().contains(&needle))
-                || entry.path.to_string_lossy().to_lowercase().contains(&needle)
+                || entry
+                    .path
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(&needle)
         })
         .map(|entry| SearchResult {
             name: entry.name.clone(),
