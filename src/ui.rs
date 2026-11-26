@@ -286,14 +286,7 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
             .collect(),
         View::Search => app
             .search_rows()
-            .map(|package| {
-                search_row(
-                    package,
-                    inner.width.saturating_sub(2),
-                    comfortable,
-                    palette,
-                )
-            })
+            .map(|package| search_row(package, inner.width.saturating_sub(2), comfortable, palette))
             .collect(),
         View::Flatpak if app.sources.flatpak_query.is_some() => app
             .sources
