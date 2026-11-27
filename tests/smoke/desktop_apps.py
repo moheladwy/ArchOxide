@@ -57,6 +57,7 @@ def archoxide(root, gio_script, *, enhanced=False):
         XDG_DATA_DIRS=str(root / "system"),
         LAUNCH_RESULT=str(root / "launch-result"),
     )
+    env.pop("NO_COLOR", None)
     master, slave = pty.openpty()
     try:
         termios.tcsetwinsize(slave, (24, 110))
@@ -80,6 +81,8 @@ def archoxide(root, gio_script, *, enhanced=False):
                 terminal.wait_for(b"Launch fixture")
                 yield terminal
                 terminal.send(b"\x1b[32u\x1b[113u" if enhanced else b" q")
+                # Keep reading the PTY so a pending redraw cannot block the app before it quits.
+                terminal.wait_for(b"\x1b[?1049l")
                 assert child.wait(timeout=5) == 0
                 assert termios.tcgetattr(slave) == original_mode
                 if enhanced:
@@ -165,9 +168,9 @@ class KeyboardSmoke(unittest.TestCase):
                     terminal.send(b"\x1b[97:65;2u\x1b[97u\x1b[45:95;2u" + finish_editing)
                     terminal.wait_for(b"\x1b[?25l")
 
-                    # Resize to render the full query, then wait for the new frame.
+                    # Resize to render the full query in a frame large enough to fill the PTY buffer.
                     terminal.output.clear()
-                    termios.tcsetwinsize(terminal.master, (24, 111))
+                    termios.tcsetwinsize(terminal.master, (48, 320))
                     terminal.send(b"\x1b[97;1:3u")  # Wake the app if no resize signal arrives.
                     terminal.wait_for(b"\x1b[2J")
                     terminal.wait_for(b"Aa_")

@@ -19,6 +19,17 @@ mod ui;
 
 use std::process::ExitCode;
 
+const HELP: &str = "\
+ArchOxide manages Arch packages, Flatpaks, and AppImages in a terminal.
+
+Usage: archoxide [OPTIONS]
+
+Options:
+    --kitty     Launch a dedicated Kitty window with the saved font settings
+    -h, --help  Print help
+
+Press ? inside ArchOxide to see keyboard shortcuts.";
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -36,12 +47,10 @@ fn run() -> Result<(), String> {
         (None, None) => false,
         (Some(mode), None) if mode == "--kitty" => true,
         (Some(mode), None) if mode == "--help" || mode == "-h" => {
-            println!(
-                "Usage: archoxide [--kitty]\n\n--kitty  Launch with the configured font in a dedicated Kitty window"
-            );
+            println!("{HELP}");
             return Ok(());
         }
-        _ => return Err("usage: archoxide [--kitty]".into()),
+        _ => return Err("invalid arguments. Run 'archoxide --help' for usage.".into()),
     };
 
     let path = config::config_path();

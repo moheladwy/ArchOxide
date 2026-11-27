@@ -6,7 +6,7 @@ ArchOxide is a keyboard-driven terminal UI for managing Arch Linux packages from
 
 Run `./install.sh` from the checkout as your regular user. It uses Cargo and Rust to build an optimized release and uses `sudo` to place the binary at `/usr/bin/archoxide`. Run the same script again to replace an existing binary with a build from your current checkout. Set `DESTDIR` to a writable staging directory to install under that directory without `sudo`.
 
-Run `archoxide` from an interactive terminal on Arch Linux, or use `cargo run --locked` from the checkout. ArchOxide uses `pacman` to read configured repositories and `sudo` for repository transactions. Install `yay` for AUR support, `flatpak` for Flatpak apps, `curl` for HTTPS AppImages, and Fontconfig for the installed font picker. Run `archoxide --kitty` to open a dedicated Kitty window with the saved font settings.
+Run `archoxide` from an interactive terminal on Arch Linux, or use `cargo run --locked` from the checkout. Run `archoxide --help` to see command-line options or `archoxide --kitty` to open a dedicated Kitty window with the saved font settings. ArchOxide uses `pacman` to read configured repositories and `sudo` for repository transactions. Install `yay` for AUR support, `flatpak` for Flatpak apps, `curl` for HTTPS AppImages, and Fontconfig for the installed font picker.
 
 ### Arch package
 
