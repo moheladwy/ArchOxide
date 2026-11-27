@@ -43,7 +43,8 @@ jobs:
                   case "$GITHUB_EVENT_NAME" in
                       workflow_dispatch) publish=true ;;
                       push)
-                          changed=$(git diff --name-only "$PUSH_BEFORE" HEAD -- PKGBUILD .SRCINFO LICENSE .github/workflows/aur.yml)
+                          changed=$(git -C "$GITHUB_WORKSPACE" -c safe.directory="$GITHUB_WORKSPACE" \
+                              diff --name-only "$PUSH_BEFORE" HEAD -- PKGBUILD .SRCINFO LICENSE .github/workflows/aur.yml)
                           publish=false
                           if [[ -n "$changed" ]]; then
                               publish=true
