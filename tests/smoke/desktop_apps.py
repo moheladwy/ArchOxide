@@ -5,6 +5,7 @@ import fcntl
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import subprocess
 import tempfile
@@ -160,20 +161,26 @@ class KeyboardSmoke(unittest.TestCase):
         for name, open_filter, finish_editing in cases:
             with self.subTest(filter=name), tempfile.TemporaryDirectory() as temp:
                 with archoxide(Path(temp), "exit 0\n", enhanced=True) as terminal:
+                    column = 23 if finish_editing == escape else 2
                     terminal.send(open_filter)
-                    terminal.wait_for(b"\x1b[?25h")
+                    terminal.wait_for(f"\x1b[?25h\x1b[3;{column}H".encode())
 
-                    terminal.output.clear()
                     # Shift+A, a, and Shift+minus as reported by the Kitty protocol.
-                    terminal.send(b"\x1b[97:65;2u\x1b[97u\x1b[45:95;2u" + finish_editing)
-                    terminal.wait_for(b"\x1b[?25l")
+                    for key, glyph in (
+                        (b"\x1b[97:65;2u", b"A"),
+                        (b"\x1b[97u", b"a"),
+                        (b"\x1b[45:95;2u", b"_"),
+                    ):
+                        terminal.output.clear()
+                        terminal.send(key)
+                        cell = f"\x1b[3;{column}H".encode()
+                        column += 1
+                        terminal.wait_for(f"\x1b[?25h\x1b[3;{column}H".encode())
+                        self.assertRegex(terminal.output, re.escape(cell) + rb"(?:\x1b\[[0-9;]*m)*" + glyph)
 
-                    # Resize to render the full query in a frame large enough to fill the PTY buffer.
                     terminal.output.clear()
-                    termios.tcsetwinsize(terminal.master, (48, 320))
-                    terminal.send(b"\x1b[97;1:3u")  # Wake the app if no resize signal arrives.
-                    terminal.wait_for(b"\x1b[2J")
-                    terminal.wait_for(b"Aa_")
+                    terminal.send(finish_editing)
+                    terminal.wait_for(b"\x1b[?25l")
 
 
 if __name__ == "__main__":
