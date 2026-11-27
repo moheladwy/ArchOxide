@@ -80,7 +80,7 @@ def archoxide(root, gio_script, *, enhanced=False):
                 terminal.send(b"\x1b[32u\x1b[111u" if enhanced else b" o")
                 terminal.wait_for(b"Launch fixture")
                 yield terminal
-                terminal.send(b"\x1b[32u\x1b[113u" if enhanced else b" q")
+                terminal.send(b"\x1b[99;5u" if enhanced else b"\x03")  # Ctrl+C quits from any view.
                 # Keep reading the PTY so a pending redraw cannot block the app before it quits.
                 terminal.wait_for(b"\x1b[?1049l")
                 assert child.wait(timeout=5) == 0
@@ -174,9 +174,6 @@ class KeyboardSmoke(unittest.TestCase):
                     terminal.send(b"\x1b[97;1:3u")  # Wake the app if no resize signal arrives.
                     terminal.wait_for(b"\x1b[2J")
                     terminal.wait_for(b"Aa_")
-
-                    if finish_editing == escape:
-                        terminal.send(escape)
 
 
 if __name__ == "__main__":
