@@ -104,6 +104,7 @@ jobs:
                                       raise RuntimeError("The transaction left the TUI's alternate screen")
 
                                   os.write(master, b"\r q")
+                                  wait_for(b"\x1b[?1049l")
                                   if app.wait(timeout=10) != 0:
                                       raise RuntimeError(f"ArchOxide exited with status {app.returncode}")
                                   if termios.tcgetattr(slave) != original_mode:
