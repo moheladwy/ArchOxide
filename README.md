@@ -8,6 +8,12 @@ Run `./install.sh` from the checkout as your regular user. It uses Cargo and Rus
 
 Run `archoxide` from an interactive terminal on Arch Linux, or use `cargo run --locked` from the checkout. ArchOxide uses `pacman` to read configured repositories and `sudo` for repository transactions. Install `yay` for AUR support, `flatpak` for Flatpak apps, `curl` for HTTPS AppImages, and Fontconfig for the installed font picker. Run `archoxide --kitty` to open a dedicated Kitty window with the saved font settings.
 
+### Arch package
+
+The [PKGBUILD](PKGBUILD) builds `archoxide-git` from the upstream `main` branch and packages `/usr/bin/archoxide` for pacman. Run `makepkg -s` as a regular user to build the package after the source URL is publicly accessible. Use pacman to install and upgrade the resulting package if you choose this installation method.
+
+To submit to the AUR, regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`, then commit `PKGBUILD`, `.SRCINFO`, and `LICENSE` in the separate `archoxide-git` AUR repository. [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines)
+
 ## Package sources and settings
 
 - **Installed packages.** Filter the inventory by name, version, or availability. The Foreign label means a package is absent from the configured repository databases.
@@ -96,3 +102,7 @@ The [CI workflow](.github/workflows/ci.yml) runs on pull requests and on pushes 
 Choose the [issue form](.github/ISSUE_TEMPLATE) that matches your report. New PRs start with the [general template](.github/pull_request_template.md). For a focused PR description, add `template=bug-fix.md`, `template=feature.md`, `template=chore.md`, or `template=docs.md` to your branch’s compare URL. [GitHub pull request query parameters](https://docs.github.com/en/pull-requests/reference/using-query-parameters-to-create-a-pull-request)
 
 The [MVP plan](.github/plans/2026-11-26-archoxide-mvp.md) records the source layout, completed milestones, and verification checks.
+
+## License
+
+ArchOxide is released under the [MIT License](LICENSE).
