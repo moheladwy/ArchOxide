@@ -1,0 +1,134 @@
+name: Arch package
+
+on:
+    pull_request:
+        branches: [main]
+        paths:
+            - PKGBUILD
+            - .SRCINFO
+            - LICENSE
+            - .github/workflows/aur.yml
+    push:
+        branches: [main]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: Build and test Arch package
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        container: archlinux:base-devel
+        defaults:
+            run:
+                shell: bash
+        outputs:
+            publish: ${{ steps.changes.outputs.publish }}
+        steps:
+            - name: Install build dependencies
+              run: pacman -Syu --noconfirm --needed git rust sudo
+
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: Check for packaging changes
+              id: changes
+              env:
+                  PUSH_BEFORE: ${{ github.event.before }}
+              run: |
+                  case "$GITHUB_EVENT_NAME" in
+                      workflow_dispatch) publish=true ;;
+                      push)
+                          changed=$(git diff --name-only "$PUSH_BEFORE" HEAD -- PKGBUILD .SRCINFO LICENSE .github/workflows/aur.yml)
+                          publish=false
+                          if [[ -n "$changed" ]]; then
+                              publish=true
+                          fi
+                          ;;
+                      *) publish=false ;;
+                  esac
+                  printf 'publish=%s\n' "$publish" >> "$GITHUB_OUTPUT"
+
+            - name: Run makepkg and verify the archive
+              run: |
+                  useradd --create-home builder
+                  build_dir=$(mktemp -d)
+                  chown builder:builder "$build_dir"
+                  install -m 644 -o builder -g builder PKGBUILD .SRCINFO "$build_dir/"
+                  runuser -u builder -- bash -euo pipefail -s -- "$build_dir" <<'BUILD'
+                      cd "$1"
+                      makepkg --printsrcinfo | diff -u .SRCINFO -
+                      makepkg --noconfirm
+                      shopt -s nullglob
+                      archives=(archoxide-git-r*.pkg.tar.zst)
+                      test "${#archives[@]}" -eq 1
+                      bsdtar -xOf "${archives[0]}" usr/bin/archoxide > archoxide-check
+                      chmod +x archoxide-check
+                      ./archoxide-check --help
+                  BUILD
+                  mkdir -p dist
+                  install -m 644 "$build_dir"/archoxide-git-r*.pkg.tar.zst dist/
+
+            - name: Upload Arch package
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: archoxide-git-x86_64
+                  path: dist/*.pkg.tar.zst
+                  if-no-files-found: error
+
+    publish:
+        name: Publish archoxide-git to the AUR
+        needs: build
+        if: >-
+            github.repository == 'moheladwy/ArchOxide' &&
+            github.ref == 'refs/heads/main' &&
+            needs.build.outputs.publish == 'true'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+        concurrency:
+            group: aur-publish
+            cancel-in-progress: false
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - name: Push packaging files
+              env:
+                  AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+              run: |
+                  git fetch --no-tags origin refs/heads/main
+                  changed=$(git diff --name-only HEAD FETCH_HEAD -- PKGBUILD .SRCINFO LICENSE)
+                  if [[ -n "$changed" ]]; then
+                      echo 'A newer packaging change is already on main.'
+                      exit 0
+                  fi
+
+                  if [[ -z "$AUR_SSH_PRIVATE_KEY" ]]; then
+                      echo 'The AUR_SSH_PRIVATE_KEY repository secret is required.' >&2
+                      exit 1
+                  fi
+                  umask 077
+                  publish_dir=$(mktemp -d)
+                  trap 'rm -rf -- "$publish_dir"' EXIT
+                  printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' > "$publish_dir/identity"
+                  unset AUR_SSH_PRIVATE_KEY
+                  # Ed25519 key verified against https://archlinux.org/news/aur-migration-new-ssh-hostkeys/.
+                  printf '%s\n' 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' > "$publish_dir/known_hosts"
+                  export GIT_SSH_COMMAND="ssh -i '$publish_dir/identity' -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o UserKnownHostsFile='$publish_dir/known_hosts'"
+
+                  git -c init.defaultBranch=master clone -- ssh://aur@aur.archlinux.org/archoxide-git.git "$publish_dir/repo"
+                  install -m 644 PKGBUILD .SRCINFO LICENSE "$publish_dir/repo/"
+                  cd "$publish_dir/repo"
+                  git add -- PKGBUILD .SRCINFO LICENSE
+                  if git diff --cached --quiet; then
+                      echo 'The AUR is up to date.'
+                      exit 0
+                  fi
+                  git -c user.name='ArchOxide CI' -c user.email='59349012+moheladwy@users.noreply.github.com' \
+                      commit -m "Sync ArchOxide packaging from ${GITHUB_SHA::7}"
+                  git push origin HEAD:refs/heads/master

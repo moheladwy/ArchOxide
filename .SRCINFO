@@ -1,6 +1,6 @@
 pkgbase = archoxide-git
 	pkgdesc = Keyboard-driven terminal UI for Arch packages, Flatpaks, and AppImages
-	pkgver = r24.37cce8f
+	pkgver = r35.8c6c6a5
 	pkgrel = 1
 	url = https://github.com/moheladwy/ArchOxide
 	arch = x86_64

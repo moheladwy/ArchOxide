@@ -1,6 +1,7 @@
+# Maintainer: Mohamed Hussein Al-Adawy <59349012+moheladwy@users.noreply.github.com>
 pkgname=archoxide-git
 _pkgname=archoxide
-pkgver=r24.37cce8f
+pkgver=r35.8c6c6a5
 pkgrel=1
 pkgdesc='Keyboard-driven terminal UI for Arch packages, Flatpaks, and AppImages'
 arch=('x86_64')
