@@ -31,12 +31,73 @@ fn split_details_pane_appears_only_when_it_fits() {
 
     let narrow = render(&mut app, 40, 14);
     assert!(narrow.contains("Packages"));
-    assert!(narrow.contains("? Help"));
-    assert!(narrow.contains("l Details"));
     assert!(!narrow.contains("┌ Details "));
 
     let tiny = render(&mut app, 12, 2);
     assert!(tiny.contains("ArchOxide"));
+}
+
+#[test]
+fn quick_help_groups_shortcuts_and_adapts_to_terminal_width() {
+    let mut app = App::default();
+    let wide = render(&mut app, 100, 24);
+    let (_, footer) = wide.split_once("Quick Help").unwrap();
+    let first_row = footer.lines().find(|row| row.contains("[?]")).unwrap();
+    assert!(first_row.contains("[l]") && first_row.contains("Details"));
+    assert!(first_row.contains("[k]/[j]/[↑]/[↓]") && first_row.contains("Move selection"));
+    assert!(footer.contains("Update all"));
+
+    let medium = render(&mut app, 80, 24);
+    let (_, footer) = medium.split_once("Quick Help").unwrap();
+    let help_row = footer.lines().find(|row| row.contains("[?]")).unwrap();
+    let move_row = footer
+        .lines()
+        .find(|row| row.contains("[k]/[j]/[↑]/[↓]"))
+        .unwrap();
+    assert!(help_row.contains("[l]") && help_row.contains("Details"));
+    assert!(move_row.contains("[/]") && move_row.contains("Filter"));
+    assert!(footer.contains("[Tab]/[Shift+Tab]"));
+    assert_eq!(
+        help_row.split_once("Help").unwrap().0.cell_width(),
+        move_row
+            .split_once("Move selection")
+            .unwrap()
+            .0
+            .cell_width(),
+    );
+
+    let narrow = render(&mut app, 40, 14);
+    let (_, footer) = narrow.split_once("Quick Help").unwrap();
+    assert!(
+        footer
+            .lines()
+            .any(|row| row.contains("[?]") && row.contains("Help") && !row.contains("[l]"))
+    );
+    assert!(
+        footer
+            .lines()
+            .any(|row| row.contains("[l]") && row.contains("Details"))
+    );
+    assert!(render(&mut app, 40, 7).contains("[?]"));
+}
+
+#[test]
+fn quick_help_shows_text_editing_shortcuts() {
+    let mut app = App::default();
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')), Instant::now());
+
+    let screen = render(&mut app, 100, 24);
+    let (_, footer) = screen.split_once("Quick Help").unwrap();
+    for shortcut in [
+        "[Enter]",
+        "[Esc]",
+        "[Home]/[End]",
+        "[Ctrl+←]/[Ctrl+→]",
+        "[Ctrl+u]",
+    ] {
+        assert!(footer.contains(shortcut));
+    }
+    assert!(!footer.contains("[Space u]"));
 }
 
 #[test]
@@ -68,12 +129,12 @@ fn help_overlays_content_and_closes_with_escape() {
     app.handle_key(KeyEvent::from(KeyCode::Char('?')), now);
     let help = render(&mut app, 90, 25);
     assert!(help.contains("Move through rows"));
-    assert!(help.contains("Esc Close help"));
+    assert!(help.contains("[Esc]/[?]") && help.contains("Close help"));
 
     app.handle_key(KeyEvent::from(KeyCode::Esc), now);
     let restored = render(&mut app, 90, 25);
     assert!(restored.contains("Reading installed packages"));
-    assert!(!restored.contains("Esc Close help"));
+    assert!(!restored.contains("Close help"));
 }
 
 #[test]

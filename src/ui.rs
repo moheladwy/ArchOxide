@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Padding, Paragraph, Wrap},
 };
 use tui_term::widget::{Cursor, PseudoTerminal};
 use unicode_segmentation::UnicodeSegmentation;
@@ -129,13 +129,22 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     } else {
         status.len()
     };
-    let status_height = (status_rows as u16).min(area.height.saturating_sub(prompt_height + 4));
+    let quick_help = quick_help_lines(app, area.width - 4, palette);
+    let available_height = area.height - prompt_height - 1;
+    let status_height = (status_rows as u16).min(available_height - 3);
+    // Leave room for the package summary and the first metadata line in Details.
+    let preferred_content_height = if app.focus == Pane::Details { 7 } else { 4 };
+    let footer_room = available_height
+        .saturating_sub(status_height + preferred_content_height)
+        .max(1)
+        .min(area.height / 2);
+    let footer_height = footer_room.min(quick_help.len() as u16 + 2);
     let [header, input, content, status_area, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(prompt_height),
         Constraint::Min(2),
         Constraint::Length(status_height),
-        Constraint::Length(1),
+        Constraint::Length(footer_height),
     ])
     .areas(area);
 
@@ -151,7 +160,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         status
     };
     frame.render_widget(status, status_area);
-    draw_footer(frame, app, footer, palette);
+    let mut help = Paragraph::new(quick_help);
+    if footer.height >= 3 {
+        help = help.block(
+            palette
+                .panel("Quick Help", false)
+                .title_style(palette.accent)
+                .padding(Padding::horizontal(1)),
+        );
+    }
+    frame.render_widget(help, footer);
     if app.show_help {
         draw_help(frame, app, content, palette);
     }
@@ -800,41 +818,143 @@ fn app_source_status(
     }
 }
 
-fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect, palette: Palette) {
-    let hints = if app.confirmation.is_some() {
-        " Enter Confirm  Esc Cancel"
-    } else if app.show_help {
-        " Esc Close help"
-    } else if app.editing() {
-        " Enter Apply  Esc Cancel  Ctrl+u Clear"
-    } else if let Some(prefix) = app.bindings.pending_label() {
-        frame.render_widget(
-            Line::from(format!(" {prefix} …   Esc Cancel")).fg(palette.accent),
-            area,
-        );
-        return;
-    } else if app.focus == Pane::Details && app.view.has_package_details() {
-        " h Back  j/k Scroll  Ctrl+u/d Page  gg/G First/last"
-    } else {
-        match app.view {
-            View::Installed => {
-                " ? Help  l Details  / Filter  x Mark  u Selected  U Except  Space u All  d Remove"
-            }
-            View::Search => " ? Help  l Details  / Search  i Install  Space u All  Tab Views",
-            View::Flatpak if app.sources.flatpak_query.is_some() => {
-                " ? Help  l Details  f Search  i Install  Esc Installed  Tab Views"
-            }
-            View::Flatpak => {
-                " ? Help  l Details  f Search  / Filter  d Remove  u/U Update  Space u All  x Mark"
-            }
-            View::AppImages => {
-                " ? Help  l Details  i Import  e Replace  d Remove  u/U Update  Space u All  x Mark"
-            }
-            View::Apps => " Enter Open  / Filter  R Refresh  Tab Views  ? Help",
-            View::Settings => " ? Help  Enter Edit  s Save  r Reset  Tab Views",
-        }
+type Shortcut<'a> = (&'a [&'static str], &'static str);
+
+const ROW_KEYS: &[&str] = &["k", "j", "↑", "↓"];
+const DETAILS_SHORTCUT: Shortcut<'static> = (&["l"], "Details");
+const FILTER_SHORTCUT: Shortcut<'static> = (&["/"], "Filter");
+const PACKAGE_SHORTCUTS: &[Shortcut<'static>] = &[
+    (&["x"], "Mark"),
+    (&["d"], "Remove"),
+    (&["u"], "Update selected"),
+    (&["U"], "Update the rest"),
+    (&["Space u"], "Update all"),
+];
+
+fn view_shortcuts(app: &App) -> Vec<Shortcut<'static>> {
+    let actions: &[Shortcut<'_>] = match app.view {
+        View::Installed => &[DETAILS_SHORTCUT, FILTER_SHORTCUT],
+        View::Search => &[
+            DETAILS_SHORTCUT,
+            (&["/"], "Search"),
+            (&["i"], "Install"),
+            (&["Space u"], "Update all"),
+        ],
+        View::Flatpak if app.sources.flatpak_query.is_some() => &[
+            DETAILS_SHORTCUT,
+            (&["f"], "Search remotes"),
+            (&["i"], "Install"),
+            (&["Esc"], "Installed Flatpaks"),
+        ],
+        View::Flatpak => &[
+            DETAILS_SHORTCUT,
+            FILTER_SHORTCUT,
+            (&["f"], "Search remotes"),
+        ],
+        View::AppImages => &[
+            DETAILS_SHORTCUT,
+            FILTER_SHORTCUT,
+            (&["i"], "Import"),
+            (&["e"], "Replace"),
+        ],
+        View::Apps => &[(&["Enter"], "Open"), FILTER_SHORTCUT, (&["R"], "Refresh")],
+        View::Settings => &[
+            (&["Enter"], "Edit setting"),
+            (&["s"], "Save settings"),
+            (&["r"], "Reset draft"),
+        ],
     };
-    frame.render_widget(Line::raw(hints), area);
+    let package_actions = match app.view {
+        View::Installed | View::AppImages => PACKAGE_SHORTCUTS,
+        View::Flatpak if app.sources.flatpak_query.is_none() => PACKAGE_SHORTCUTS,
+        _ => &[],
+    };
+    let mut actions = actions.iter().chain(package_actions).copied();
+    let mut shortcuts = Vec::new();
+    for navigation in [
+        (&["?"][..], "Help"),
+        (ROW_KEYS, "Move selection"),
+        (&["Tab", "Shift+Tab"], "Switch views"),
+        (&["Space q", "Ctrl+c"], "Quit"),
+    ] {
+        shortcuts.push(navigation);
+        shortcuts.extend(actions.next());
+    }
+    shortcuts.extend(actions);
+    shortcuts
+}
+
+fn quick_help_lines(app: &App, width: u16, palette: Palette) -> Vec<Line<'static>> {
+    let pending_keys;
+    let hints: &[Shortcut<'_>] = if app.show_help {
+        &[(&["Esc", "?"], "Close help"), (ROW_KEYS, "Scroll")]
+    } else if app.confirmation.is_some() {
+        &[(&["Enter"], "Confirm"), (&["Esc"], "Cancel")]
+    } else if app.editing() {
+        &[
+            (&["Enter"], "Apply"),
+            (&["Esc"], "Cancel"),
+            (&["Home", "End"], "Text start / end"),
+            (&["Ctrl+←", "Ctrl+→"], "Move by word"),
+            (&["Ctrl+u"], "Clear text"),
+        ]
+    } else if let Some(prefix) = app.bindings.pending_label() {
+        pending_keys = [prefix];
+        &[(&pending_keys, "Next key…"), (&["Esc"], "Cancel")]
+    } else if app.focus == Pane::Details && app.view.has_package_details() {
+        &[
+            (&["h", "Esc"], "Back to list"),
+            (ROW_KEYS, "Scroll"),
+            (&["Ctrl+u", "Ctrl+d"], "Scroll half a page"),
+            (&["gg", "Ctrl+Home"], "Scroll to top"),
+            (&["G", "Ctrl+End"], "Scroll to bottom"),
+        ]
+    } else {
+        &view_shortcuts(app)
+    };
+
+    let hints: Vec<_> = hints
+        .iter()
+        .map(|&(keys, action)| {
+            let keys = format!("[{}]", keys.join("]/["));
+            (keys, action)
+        })
+        .collect();
+    let key_width = hints
+        .iter()
+        .map(|(keys, _)| keys.cell_width())
+        .max()
+        .unwrap_or(0);
+    let min_column_width = hints
+        .iter()
+        .map(|(keys, action)| keys.cell_width() + 1 + action.cell_width())
+        .max()
+        .unwrap_or(1);
+    let gap = 2;
+    let columns = ((width + gap) / (min_column_width + gap))
+        .clamp(1, 3)
+        .min(hints.len() as u16);
+    let column_width = (width - gap * (columns - 1)) / columns;
+
+    hints
+        .chunks(usize::from(columns))
+        .map(|row| {
+            let mut line = Line::default();
+            for (index, (keys, action)) in row.iter().enumerate() {
+                if index > 0 {
+                    let column_start = index * usize::from(column_width + gap);
+                    line.push_span(" ".repeat(column_start - line.width()));
+                }
+                let action_start = (key_width + gap)
+                    .min(column_width.saturating_sub(action.cell_width()))
+                    .max(keys.cell_width() + 1);
+                line.push_span(Span::raw(keys.clone()).fg(palette.accent));
+                line.push_span(" ".repeat(usize::from(action_start - keys.cell_width())));
+                line.push_span(Span::raw(*action).fg(palette.muted));
+            }
+            line
+        })
+        .collect()
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
