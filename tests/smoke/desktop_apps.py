@@ -1,4 +1,4 @@
-"""Exercise desktop launching with a controlling PTY and a fixture gio."""
+"""Exercise desktop launching and enhanced keyboard input in a controlling PTY."""
 
 from contextlib import contextmanager
 import fcntl
@@ -74,7 +74,7 @@ def archoxide(root, gio_script, *, enhanced=False):
                 if enhanced:
                     terminal.wait_for(b"\x1b[?u\x1b[c")
                     terminal.send(b"\x1b[?0u\x1b[?1;2c")
-                    terminal.wait_for(b"\x1b[>11u")
+                    terminal.wait_for(b"\x1b[>15u")
                 terminal.wait_for(b"Filter installed")
                 terminal.send(b"\x1b[32u\x1b[111u" if enhanced else b" o")
                 terminal.wait_for(b"Launch fixture")
@@ -133,6 +133,47 @@ fi
                 terminal.send(b"\x1b[13u")
                 terminal.wait_for(b"ed Launch fixture.")
                 self.assertEqual((root / "launch-result").read_text(), "xx")
+
+
+class KeyboardSmoke(unittest.TestCase):
+    def test_enhanced_terminal_preserves_shifted_text_in_all_filters(self):
+        leader = b"\x1b[32u"
+        slash = b"\x1b[47u"
+        enter = b"\x1b[13u"
+        escape = b"\x1b[27u"
+        flatpak = leader + b"\x1b[112u"
+        settings = leader + b"\x1b[102u\x1b[116u"
+        cases = (
+            ("Apps", slash, enter),
+            ("Installed", leader + b"\x1b[101u" + slash, enter),
+            ("Search", leader + b"\x1b[102u\x1b[102u", enter),
+            ("Flatpak installed", flatpak + slash, enter),
+            ("Flatpak remotes", flatpak + b"\x1b[102u", enter),
+            ("AppImages", leader + b"\x1b[97u" + slash, enter),
+            ("Theme picker", settings + enter + slash, escape),
+            ("Font picker", settings + b"\x1b[106u" * 3 + enter + slash, escape),
+        )
+
+        for name, open_filter, finish_editing in cases:
+            with self.subTest(filter=name), tempfile.TemporaryDirectory() as temp:
+                with archoxide(Path(temp), "exit 0\n", enhanced=True) as terminal:
+                    terminal.send(open_filter)
+                    terminal.wait_for(b"\x1b[?25h")
+
+                    terminal.output.clear()
+                    # Shift+A, a, and Shift+minus as reported by the Kitty protocol.
+                    terminal.send(b"\x1b[97:65;2u\x1b[97u\x1b[45:95;2u" + finish_editing)
+                    terminal.wait_for(b"\x1b[?25l")
+
+                    # Resize to render the full query, then wait for the new frame.
+                    terminal.output.clear()
+                    termios.tcsetwinsize(terminal.master, (24, 111))
+                    terminal.send(b"\x1b[97;1:3u")  # Wake the app if no resize signal arrives.
+                    terminal.wait_for(b"\x1b[2J")
+                    terminal.wait_for(b"Aa_")
+
+                    if finish_editing == escape:
+                        terminal.send(escape)
 
 
 if __name__ == "__main__":

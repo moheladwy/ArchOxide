@@ -1,11 +1,13 @@
 use ratatui::{
     Frame,
+    buffer::CellWidth,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap},
 };
 use tui_term::widget::{Cursor, PseudoTerminal};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     app::{App, PackageInfo, Pane, ReadState, Setting, View},
@@ -40,10 +42,13 @@ const HELP: &[&str] = &[
     "Esc               Return to installed Flatpaks",
     "i / e             Import / replace an AppImage",
     "Space f f         Open package search",
+    "aur/ pacman/ flatpak/   Search a single package source",
     "Space f t         Go to Theme",
     "Enter             Open selected app or edit setting",
     "s / r             Save settings / reset draft",
     "Ctrl+u            Clear text in a prompt",
+    "Home / End        Move to the start / end of prompt text",
+    "Ctrl+← / Ctrl+→   Move by a word in a prompt",
     "Space q / Ctrl+c  Quit",
     "",
     "j / k scroll here. Esc closes help.",
@@ -136,7 +141,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
     draw_header(frame, app, header, palette);
     if let Some((title, text)) = prompt {
-        draw_prompt(frame, input, title, text, app.editing(), palette);
+        draw_prompt(frame, input, title, text, app.prompt_cursor(), palette);
     }
     draw_content(frame, app, content, palette);
     let status = Paragraph::new(status);
@@ -223,34 +228,34 @@ fn draw_prompt(
     area: Rect,
     title: &str,
     text: &str,
-    editing: bool,
+    cursor: Option<usize>,
     palette: Palette,
 ) {
-    let block = palette.panel(title, editing);
+    let block = palette.panel(title, cursor.is_some());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if text.is_empty() && !editing {
+    if text.is_empty() && cursor.is_none() {
         frame.render_widget(Paragraph::new("Press / to type").fg(palette.muted), inner);
         return;
     }
 
-    let line = Line::raw(text);
-    let width = line.width();
-    let max_column = inner.width.saturating_sub(1);
-    let scroll = if editing {
-        width.saturating_sub(usize::from(max_column))
-    } else {
-        0
-    };
-    frame.render_widget(
-        Paragraph::new(line).scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
-        inner,
-    );
-    if editing && !inner.is_empty() {
-        let column = width.min(usize::from(max_column)) as u16;
+    let mut start = 0;
+    if let Some(cursor) = cursor.filter(|_| !inner.is_empty()) {
+        let mut column = 0;
+        start = cursor;
+        for (offset, grapheme) in text[..cursor].grapheme_indices(true).rev() {
+            let width = usize::from(grapheme.cell_width());
+            if column + width >= usize::from(inner.width) {
+                break;
+            }
+            column += width;
+            start = offset;
+        }
+        let column = column as u16;
         frame.set_cursor_position((inner.x + column, inner.y));
     }
+    frame.render_widget(Paragraph::new(Line::raw(&text[start..])), inner);
 }
 
 fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palette) {
@@ -396,6 +401,9 @@ fn draw_content(frame: &mut Frame<'_>, app: &mut App, area: Rect, palette: Palet
             },
             View::Search if app.query.is_empty() => {
                 "Press / to search by package name or description."
+            }
+            View::Search if app.search_terms().1.is_empty() => {
+                "Type a package name after the source prefix."
             }
             View::Search if app.search_states.contains(&ReadState::Loading) => "Searching…",
             View::Search => "No results from the available sources.",
@@ -711,10 +719,14 @@ fn status_lines(app: &App, palette: Palette) -> Vec<Line<'static>> {
             );
         }
         View::Search => {
-            if !app.config.packages.aur_enabled {
-                lines.push(Line::raw(" AUR disabled in Settings").fg(palette.muted));
-            } else if !app.yay_available {
-                lines.push(Line::raw(" AUR unavailable  ·  yay was not found").fg(palette.muted));
+            if app.search_terms().0.is_none() {
+                if !app.config.packages.aur_enabled {
+                    lines.push(Line::raw(" AUR disabled in Settings").fg(palette.muted));
+                } else if !app.yay_available {
+                    lines.push(
+                        Line::raw(" AUR unavailable  ·  yay was not found").fg(palette.muted),
+                    );
+                }
             }
             for (label, state) in ["Pacman", "AUR", "Flatpak", "AppImage"]
                 .into_iter()
@@ -872,8 +884,8 @@ fn draw_picker(frame: &mut Frame<'_>, picker: &mut Picker, area: Rect, palette: 
         frame,
         filter,
         "Filter choices",
-        &picker.query,
-        picker.editing,
+        picker.query.as_str(),
+        picker.editing.then(|| picker.query.cursor()),
         palette,
     );
     let items: Vec<_> = picker

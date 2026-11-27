@@ -22,6 +22,8 @@ To submit to the AUR, regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCI
 - **Apps.** Browse and open desktop launchers from your session’s XDG application directories, including Flatpak exports on its data path. Opening apps uses `gio` from the `glib2` package on Arch Linux.
 - **Settings.** Preview 18 themes, including all 15 DWM Titus palettes. Choose an installed font family, set its size, adjust row density and details width, and toggle AUR, Flatpak, or AppImages support.
 
+In **Search**, use `aur/vscode`, `pacman/firefox`, or `flatpak/org.mozilla.firefox` to search a single source. A query without a source prefix searches all enabled sources.
+
 ## Keys
 
 | Key | Action |
@@ -31,6 +33,7 @@ To submit to the AUR, regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCI
 | `gg` / `G`, `Ctrl+Home` / `Ctrl+End` | Jump to the first or last row. |
 | `h` / `l`, `Ctrl+h` / `Ctrl+l` | Return to the list or focus Details. On narrow terminals, Details takes the full width for packages. |
 | `/`, `a`, `R` | Filter an installed list or edit the search query. In Installed, `a` cycles availability. `R` reloads inventories and Flatpak search results. |
+| `Home` / `End`, `Ctrl+←` / `Ctrl+→` | While editing a filter or search, move to the start or end of the text, or move by one word. |
 | `i`, `d` | Install the selected result or remove the selected items in an installed list. |
 | `Space u`, `u`, `U` | Update all apps in the current source, update selected apps, or update all except selected apps. Use `u` and `U` in an installed list. |
 | `x`, `X` | Toggle the highlighted app’s mark or clear all marks in the current installed list. |

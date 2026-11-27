@@ -12,3 +12,4 @@ serde = { version = "1.0.229", features = ["derive"] }
 tempfile = "3.27.0"
 toml = "1.2.3"
 tui-term = "0.3.4"
+unicode-segmentation = "1.13.3"

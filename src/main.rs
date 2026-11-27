@@ -12,6 +12,7 @@ mod pty;
 mod reads;
 mod source_views;
 mod terminal;
+mod text_input;
 mod themes;
 mod transaction_terminal;
 mod ui;

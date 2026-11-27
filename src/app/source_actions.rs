@@ -26,7 +26,7 @@ impl App {
         self.draft
             .as_ref()
             .filter(|draft| draft.field == field)
-            .map_or(committed, |draft| draft.text.as_str())
+            .map_or(committed, |draft| draft.input.as_str())
             .to_lowercase()
     }
 
@@ -107,10 +107,10 @@ impl App {
         let browsing = self.sources.flatpak_query.is_some();
         match action {
             Action::SearchFlatpak => {
-                self.draft = Some(Draft {
-                    field: Field::FlatpakSearch,
-                    text: self.sources.flatpak_query.clone().unwrap_or_default(),
-                });
+                self.draft = Some(Draft::new(
+                    Field::FlatpakSearch,
+                    self.sources.flatpak_query.clone().unwrap_or_default(),
+                ));
                 self.focus = Pane::List;
             }
             Action::RefreshInventory => {
@@ -170,20 +170,14 @@ impl App {
             }
             Action::ClearMarks => self.sources.images.marks.clear(),
             Action::Install => {
-                self.draft = Some(Draft {
-                    field: Field::ImageImport,
-                    text: String::new(),
-                });
+                self.draft = Some(Draft::new(Field::ImageImport, String::new()));
                 self.focus = Pane::List;
             }
             Action::ReplaceAppImage
                 if self.sources.images.state == ReadState::Ready
                     && self.selected_image().is_some() =>
             {
-                self.draft = Some(Draft {
-                    field: Field::ImageReplace,
-                    text: String::new(),
-                });
+                self.draft = Some(Draft::new(Field::ImageReplace, String::new()));
                 self.focus = Pane::List;
             }
             Action::Remove if self.sources.images.state == ReadState::Ready => {
