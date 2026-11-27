@@ -11,6 +11,7 @@ on:
             - PKGBUILD
             - .SRCINFO
             - LICENSE
+            - packaging/archoxide-bin/**
             - .github/workflows/**
     push:
         branches: [main]
@@ -22,6 +23,7 @@ on:
             - PKGBUILD
             - .SRCINFO
             - LICENSE
+            - packaging/archoxide-bin/**
             - .github/workflows/**
     workflow_dispatch:
 
@@ -41,7 +43,7 @@ jobs:
             sync_aur: ${{ steps.changes.outputs.sync_aur }}
         steps:
             - name: Install build dependencies
-              run: pacman -Syu --noconfirm --needed git rust sudo
+              run: pacman -Syu --noconfirm --needed git jq rust sudo
 
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
@@ -72,7 +74,7 @@ jobs:
                   esac
                   printf 'sync_aur=%s\n' "$sync_aur" >> "$GITHUB_OUTPUT"
 
-            - name: Run makepkg and verify the archive
+            - name: Build and test the source and binary packages
               run: |
                   useradd --create-home builder
                   build_dir=$(mktemp -d)
@@ -80,10 +82,14 @@ jobs:
                   git -c safe.directory="$GITHUB_WORKSPACE" clone --bare --no-local \
                       "$GITHUB_WORKSPACE" "$build_dir/archoxide"
                   git -C "$build_dir/archoxide" update-ref refs/heads/main "$GITHUB_SHA"
+                  # Use the source commit's timestamp for repeatable makepkg builds.
+                  SOURCE_DATE_EPOCH=$(git -C "$build_dir/archoxide" show -s --format=%ct "$GITHUB_SHA")
+                  export SOURCE_DATE_EPOCH
                   chown -R builder:builder "$build_dir/archoxide"
                   chown builder:builder "$build_dir"
                   install -m 644 -o builder -g builder PKGBUILD .SRCINFO "$build_dir/"
-                  runuser -u builder -- bash -euo pipefail -s -- "$build_dir" "$GITHUB_SHA" <<'BUILD'
+                  runuser -u builder -- bash -euo pipefail -s -- "$build_dir" "$GITHUB_SHA" \
+                      "$GITHUB_WORKSPACE/packaging/archoxide-bin/build.sh" "$GITHUB_RUN_NUMBER" <<'BUILD'
                       cd "$1"
                       makepkg --printsrcinfo | diff -u .SRCINFO -
                       makepkg --noconfirm --holdver
@@ -91,19 +97,17 @@ jobs:
                       shopt -s nullglob
                       archives=(archoxide-git-r*-x86_64.pkg.tar.zst)
                       test "${#archives[@]}" -eq 1
-                      bsdtar -xOf "${archives[0]}" usr/bin/archoxide > archoxide-check
-                      chmod +x archoxide-check
-                      ./archoxide-check --help
+                      bash "$3" "${archives[0]}" dist src/archoxide/Cargo.toml "$4"
                   BUILD
-                  mkdir -p dist
-                  install -m 644 "$build_dir"/archoxide-git-r*-x86_64.pkg.tar.zst dist/
+                  cp -R "$build_dir/dist" dist
 
             - name: Upload Arch package
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
-                  name: archoxide-git-x86_64
-                  path: dist/*.pkg.tar.zst
+                  name: archoxide-bin-x86_64
+                  path: dist/
                   if-no-files-found: error
+                  include-hidden-files: true
 
     release:
         name: Publish Arch package download
@@ -119,7 +123,7 @@ jobs:
         steps:
             - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
               with:
-                  name: archoxide-git-x86_64
+                  name: archoxide-bin-x86_64
                   path: dist
 
             - name: Publish the built version to GitHub Releases
@@ -129,32 +133,39 @@ jobs:
                   GH_REPO: ${{ github.repository }}
               run: |
                   shopt -s nullglob
-                  archives=(dist/archoxide-git-r*-x86_64.pkg.tar.zst)
-                  test "${#archives[@]}" -eq 1
-                  archive_name=${archives[0]##*/}
+                  packages=(dist/release/archoxide-bin-*-x86_64.pkg.tar.zst)
+                  payloads=(dist/release/archoxide-*-x86_64.tar.gz)
+                  test "${#packages[@]}" -eq 1
+                  test "${#payloads[@]}" -eq 1
+                  archive_name=${packages[0]##*/}
+                  payload_name=${payloads[0]##*/}
                   tag=${archive_name%-x86_64.pkg.tar.zst}
-                  if release=$(gh release view "$tag" --json isDraft,assets 2>/dev/null); then
+                  if release=$(gh release view "$tag" --json isDraft,targetCommitish 2>/dev/null); then
+                      jq -e --arg sha "$GITHUB_SHA" '.targetCommitish == $sha' <<< "$release" >/dev/null
                       if jq -e '.isDraft' <<< "$release" >/dev/null; then
-                          gh release upload "$tag" "${archives[0]}" --clobber
+                          gh release upload "$tag" "${packages[0]}" "${payloads[0]}" --clobber
                           gh release edit "$tag" --draft=false
-                      else
-                          jq -e --arg name "$archive_name" 'any(.assets[]; .name == $name)' \
-                              <<< "$release" >/dev/null
-                          echo "The package for $tag is already published."
                       fi
                   else
-                      gh release create "$tag" "${archives[0]}" --prerelease \
+                      gh release create "$tag" "${packages[0]}" "${payloads[0]}" --prerelease \
                           --target "$GITHUB_SHA" --title "$tag" \
                           --notes "Arch Linux x86_64 package built and tested from commit $GITHUB_SHA."
                   fi
+                  # The AUR recipe must reference the bytes on GitHub, including on retries.
+                  digest=$(sha256sum "${payloads[0]}")
+                  if ! gh api "repos/$GH_REPO/releases/tags/$tag" | jq -e \
+                      --arg payload "$payload_name" --arg digest "sha256:${digest%% *}" \
+                      --arg archive "$archive_name" \
+                      'any(.assets[]; .name == $payload and .digest == $digest) and
+                       any(.assets[]; .name == $archive and .state == "uploaded")' >/dev/null; then
+                      echo "The published assets for $tag do not match the binary package recipe." >&2
+                      exit 1
+                  fi
 
     publish:
-        name: Publish archoxide-git to the AUR
-        needs: build
-        if: >-
-            github.repository == 'moheladwy/ArchOxide' &&
-            github.ref == 'refs/heads/main' &&
-            needs.build.outputs.sync_aur == 'true'
+        name: Publish package recipes to the AUR
+        needs: [build, release]
+        if: github.repository == 'moheladwy/ArchOxide' && github.ref == 'refs/heads/main'
         runs-on: ubuntu-24.04
         timeout-minutes: 5
         concurrency:
@@ -165,17 +176,17 @@ jobs:
               with:
                   persist-credentials: false
 
+            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: archoxide-bin-x86_64
+                  path: dist
+
             - name: Push packaging files
+              shell: bash
               env:
                   AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+                  SYNC_GIT_RECIPE: ${{ needs.build.outputs.sync_aur }}
               run: |
-                  git fetch --no-tags origin refs/heads/main
-                  changed=$(git diff --name-only HEAD FETCH_HEAD -- PKGBUILD .SRCINFO LICENSE)
-                  if [[ -n "$changed" ]]; then
-                      echo 'A newer packaging change is already on main.'
-                      exit 0
-                  fi
-
                   if [[ -z "$AUR_SSH_PRIVATE_KEY" ]]; then
                       echo 'The AUR_SSH_PRIVATE_KEY repository secret is required.' >&2
                       exit 1
@@ -193,14 +204,37 @@ jobs:
                   printf '%s\n' 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' > "$publish_dir/known_hosts"
                   export GIT_SSH_COMMAND="ssh -i '$publish_dir/identity' -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o UserKnownHostsFile='$publish_dir/known_hosts'"
 
-                  git -c init.defaultBranch=master clone -- ssh://aur@aur.archlinux.org/archoxide-git.git "$publish_dir/repo"
-                  install -m 644 PKGBUILD .SRCINFO LICENSE "$publish_dir/repo/"
-                  cd "$publish_dir/repo"
-                  git add -- PKGBUILD .SRCINFO LICENSE
-                  if git diff --cached --quiet; then
-                      echo 'The AUR is up to date.'
-                      exit 0
+                  publish_recipe() (
+                      package=$1
+                      recipe_dir=$2
+                      repo="$publish_dir/$package"
+                      git -c init.defaultBranch=master clone -- "ssh://aur@aur.archlinux.org/$package.git" "$repo"
+                      if [[ "$package" == archoxide-bin && -f "$repo/.SRCINFO" ]]; then
+                          current_release=$(awk '$1 == "pkgrel" { print $3; exit }' "$repo/.SRCINFO")
+                          if [[ "$current_release" =~ ^[1-9][0-9]*$ ]] && ((current_release > GITHUB_RUN_NUMBER)); then
+                              echo 'A newer archoxide-bin release is already on the AUR.'
+                              exit 0
+                          fi
+                      fi
+                      install -m 644 "$recipe_dir/PKGBUILD" "$recipe_dir/.SRCINFO" "$recipe_dir/LICENSE" "$repo/"
+                      cd "$repo"
+                      git add -- PKGBUILD .SRCINFO LICENSE
+                      if git diff --cached --quiet; then
+                          echo "$package is up to date on the AUR."
+                          exit 0
+                      fi
+                      git -c user.name='ArchOxide CI' -c user.email='59349012+moheladwy@users.noreply.github.com' \
+                          commit -m "Sync $package packaging from ${GITHUB_SHA::7}"
+                      git push origin HEAD:refs/heads/master
+                  )
+
+                  publish_recipe archoxide-bin "$GITHUB_WORKSPACE/dist/aur"
+                  if [[ "$SYNC_GIT_RECIPE" == true ]]; then
+                      git fetch --no-tags origin refs/heads/main
+                      changed=$(git diff --name-only HEAD FETCH_HEAD -- PKGBUILD .SRCINFO LICENSE)
+                      if [[ -n "$changed" ]]; then
+                          echo 'A newer archoxide-git packaging change is already on main.'
+                      else
+                          publish_recipe archoxide-git "$GITHUB_WORKSPACE"
+                      fi
                   fi
-                  git -c user.name='ArchOxide CI' -c user.email='59349012+moheladwy@users.noreply.github.com' \
-                      commit -m "Sync ArchOxide packaging from ${GITHUB_SHA::7}"
-                  git push origin HEAD:refs/heads/master

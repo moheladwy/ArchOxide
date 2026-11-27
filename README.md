@@ -10,11 +10,11 @@ Run `archoxide` from an interactive terminal on Arch Linux, or use `cargo run --
 
 ### Arch package
 
-The [PKGBUILD](PKGBUILD) builds `archoxide-git` from the upstream `main` branch and packages `/usr/bin/archoxide` for pacman. Run `makepkg -s` as a regular user to build it locally, then install the resulting archive with `pacman -U`.
+Install the prebuilt package on x86_64 Arch Linux with `yay -S archoxide-bin`, or download the `archoxide-bin-*.pkg.tar.zst` archive from [GitHub Releases](https://github.com/moheladwy/ArchOxide/releases) and install it with `sudo pacman -U <archive>`. The package installs `/usr/bin/archoxide`.
 
-The [Arch package workflow](.github/workflows/aur.yml) builds and tests the exact revision when Rust source, tests, Cargo files, packaging files, or GitHub Actions workflows change. After a successful build on `main`, it publishes the versioned x86_64 `.pkg.tar.zst` as a [GitHub prerelease](https://github.com/moheladwy/ArchOxide/releases). Install a downloaded archive with `sudo pacman -U <archive>`.
+The [Arch package workflow](.github/workflows/aur.yml) builds and tests the exact revision when Rust source, tests, Cargo files, packaging files, or GitHub Actions workflows change. It uses the version from `Cargo.toml` as `pkgver` and the workflow run number as `pkgrel`. After a successful build on `main`, it publishes the archives to GitHub and syncs the checksum-verified recipe to [AUR `archoxide-bin`](https://aur.archlinux.org/packages/archoxide-bin).
 
-When packaging files change, the workflow synchronizes `PKGBUILD`, `.SRCINFO`, and `LICENSE` to the [AUR repository](https://aur.archlinux.org/packages/archoxide-git) using the `AUR_SSH_PRIVATE_KEY` Actions secret. AUR builds of `archoxide-git` pull `main` and derive the package version from the source commit. Regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO` after editing package metadata. Run the workflow manually on `main` to retry publication. [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines)
+The root [PKGBUILD](PKGBUILD) builds `archoxide-git` from `main`. To build locally, run `makepkg -s` as a regular user and install the archive with `sudo pacman -U <archive>`. The workflow syncs this recipe to [AUR `archoxide-git`](https://aur.archlinux.org/packages/archoxide-git) when its packaging changes. Regenerate the root `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO` after editing its metadata. Both AUR publishers use the `AUR_SSH_PRIVATE_KEY` Actions secret. [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines)
 
 ## Package sources and settings
 
