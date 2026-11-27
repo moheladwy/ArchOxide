@@ -43,7 +43,8 @@ jobs:
                   case "$GITHUB_EVENT_NAME" in
                       workflow_dispatch) publish=true ;;
                       push)
-                          changed=$(git diff --name-only "$PUSH_BEFORE" HEAD -- PKGBUILD .SRCINFO LICENSE .github/workflows/aur.yml)
+                          changed=$(git -C "$GITHUB_WORKSPACE" -c safe.directory="$GITHUB_WORKSPACE" \
+                              diff --name-only "$PUSH_BEFORE" HEAD -- PKGBUILD .SRCINFO LICENSE .github/workflows/aur.yml)
                           publish=false
                           if [[ -n "$changed" ]]; then
                               publish=true
@@ -117,6 +118,10 @@ jobs:
                   trap 'rm -rf -- "$publish_dir"' EXIT
                   printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' > "$publish_dir/identity"
                   unset AUR_SSH_PRIVATE_KEY
+                  if ! ssh-keygen -y -P '' -f "$publish_dir/identity" >/dev/null 2>&1; then
+                      echo 'AUR_SSH_PRIVATE_KEY must contain the complete SSH private key with its original line breaks and no passphrase.' >&2
+                      exit 1
+                  fi
                   # Ed25519 key verified against https://archlinux.org/news/aur-migration-new-ssh-hostkeys/.
                   printf '%s\n' 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' > "$publish_dir/known_hosts"
                   export GIT_SSH_COMMAND="ssh -i '$publish_dir/identity' -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o UserKnownHostsFile='$publish_dir/known_hosts'"
