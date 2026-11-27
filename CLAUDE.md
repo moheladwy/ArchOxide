@@ -17,3 +17,7 @@ Keep package-manager prompts and live output in the terminal popup. `src/transac
 - `cargo clippy --locked --all-targets -- -D warnings` runs the same lint check as CI.
 - `cargo test --locked` runs the test suite.
 - The [CI workflow](.github/workflows/ci.yml) also builds the binary and answers a fixture package-manager prompt through the terminal popup.
+
+## Pull request reviews
+
+In Claude Code, run `/archoxide-pr-review 123` or pass a PR URL. With no argument, the skill reviews the PR for the current branch. [Shared PR review skill](.agents/skills/archoxide-pr-review/SKILL.md)
