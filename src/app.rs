@@ -15,6 +15,7 @@ use crate::{
     picker::{Choice, Kind as PickerKind, Outcome as PickerOutcome, Picker},
     reads::{Reads, Request, Response, SEARCH_SOURCES, search_index},
     source_views::Sources,
+    text_input::{Edit, TextInput},
 };
 
 mod desktop_actions;
@@ -172,7 +173,16 @@ enum Field {
 #[derive(Debug)]
 struct Draft {
     field: Field,
-    text: String,
+    input: TextInput,
+}
+
+impl Draft {
+    fn new(field: Field, text: String) -> Self {
+        Self {
+            field,
+            input: text.into(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -385,7 +395,7 @@ impl App {
                 Field::Setting(Setting::FontSize) => "Font size (pt)",
                 Field::Setting(setting) => setting.label(),
             };
-            return Some((title, &draft.text));
+            return Some((title, draft.input.as_str()));
         }
         match self.view {
             View::Installed => Some(("Filter installed", &self.filter)),
@@ -402,6 +412,10 @@ impl App {
 
     pub fn editing(&self) -> bool {
         self.draft.is_some()
+    }
+
+    pub fn prompt_cursor(&self) -> Option<usize> {
+        self.draft.as_ref().map(|draft| draft.input.cursor())
     }
 
     pub fn update_layout(&mut self, visible_rows: usize, details_visible: bool) {
@@ -505,58 +519,44 @@ impl App {
         let Some(draft) = self.draft.as_mut() else {
             return;
         };
-        if key.code == KeyCode::Char('u') && key.modifiers == KeyModifiers::CONTROL {
-            draft.text.clear();
-            if draft.field == Field::Filter {
-                self.refilter();
-            }
-            return;
-        }
-        if !plain_key(key) {
-            return;
-        }
-
         match key.code {
-            KeyCode::Esc => {
+            KeyCode::Esc if plain_key(key) => {
                 let filtering = draft.field == Field::Filter;
                 self.draft = None;
                 if filtering {
                     self.refilter();
                 }
-                return;
             }
-            KeyCode::Enter if key.kind == KeyEventKind::Press => {
+            KeyCode::Enter if plain_key(key) && key.kind == KeyEventKind::Press => {
                 let draft = self.draft.take().expect("an active text prompt");
+                let text = draft.input.into_string();
                 match draft.field {
                     Field::Filter => {
-                        self.filter = draft.text;
+                        self.filter = text;
                         self.refilter();
                     }
                     Field::Search => {
-                        self.query = draft.text.trim().to_owned();
+                        self.query = text.trim().to_owned();
                         self.search_selection = None;
                         self.refresh_search();
                     }
-                    Field::FlatpakFilter => self.sources.flatpaks.filter = draft.text,
-                    Field::FlatpakSearch => self.search_flatpaks(draft.text),
-                    Field::ImageFilter => self.sources.images.filter = draft.text,
-                    Field::DesktopAppFilter => self.desktop_apps.filter = draft.text,
+                    Field::FlatpakFilter => self.sources.flatpaks.filter = text,
+                    Field::FlatpakSearch => self.search_flatpaks(text),
+                    Field::ImageFilter => self.sources.images.filter = text,
+                    Field::DesktopAppFilter => self.desktop_apps.filter = text,
                     Field::ImageImport | Field::ImageReplace => {
-                        self.confirm_image_source(draft.field, draft.text)
+                        self.confirm_image_source(draft.field, text)
                     }
-                    Field::Setting(setting) => self.set_from_text(setting, draft.text),
+                    Field::Setting(setting) => self.set_from_text(setting, text),
                 }
-                return;
             }
-            KeyCode::Backspace => {
-                draft.text.pop();
+            _ => {
+                if matches!(draft.input.edit(key), Some(Edit::Changed))
+                    && draft.field == Field::Filter
+                {
+                    self.refilter();
+                }
             }
-            KeyCode::Char(character) if !character.is_control() => draft.text.push(character),
-            _ => return,
-        }
-
-        if draft.field == Field::Filter {
-            self.refilter();
         }
     }
 
@@ -671,8 +671,11 @@ impl App {
             self.refresh_desktop_apps();
         }
         if view == View::Search
-            && !self.query.is_empty()
-            && self.search_states[0] == ReadState::Idle
+            && !self.search_terms().1.is_empty()
+            && self
+                .search_states
+                .iter()
+                .all(|state| *state == ReadState::Idle)
         {
             self.refresh_search();
         }
@@ -757,7 +760,7 @@ impl App {
             View::Apps => (Field::DesktopAppFilter, self.desktop_apps.filter.clone()),
             View::Settings => return,
         };
-        self.draft = Some(Draft { field, text });
+        self.draft = Some(Draft::new(field, text));
         self.focus = Pane::List;
     }
 
@@ -828,7 +831,7 @@ impl App {
             .draft
             .as_ref()
             .filter(|draft| draft.field == Field::Filter)
-            .map_or(self.filter.as_str(), |draft| draft.text.as_str())
+            .map_or(self.filter.as_str(), |draft| draft.input.as_str())
             .to_lowercase();
         self.visible_installed = self
             .installed
@@ -871,25 +874,58 @@ impl App {
         self.selections[View::Search.index()].select(None);
     }
 
+    pub fn search_terms(&self) -> (Option<SearchSource>, &str) {
+        let query = self.query.trim();
+        let Some((prefix, term)) = query.split_once('/') else {
+            return (None, query);
+        };
+        let source = match prefix {
+            "pacman" => SearchSource::Repository,
+            "aur" => SearchSource::Aur,
+            "flatpak" => SearchSource::Flatpak,
+            _ => return (None, query),
+        };
+        (Some(source), term.trim())
+    }
+
+    fn search_unavailable(&self, source: SearchSource) -> Option<&'static str> {
+        match source {
+            SearchSource::Aur if !self.config.packages.aur_enabled => {
+                Some("Enable AUR support in Settings.")
+            }
+            SearchSource::Aur if !self.yay_available => Some("yay was not found."),
+            SearchSource::Flatpak if !self.config.packages.flatpak_enabled => {
+                Some("Enable Flatpak support in Settings.")
+            }
+            SearchSource::AppImage if !self.config.packages.appimage_enabled => {
+                Some("Enable AppImages support in Settings.")
+            }
+            _ => None,
+        }
+    }
+
     fn refresh_search(&mut self) {
         self.invalidate_search();
-        if self.query.is_empty() {
+        let (scope, term) = self.search_terms();
+        if term.is_empty() {
             self.search_selection = None;
             return;
         }
+        let term = term.to_owned();
         for source in SEARCH_SOURCES {
-            let enabled = match source {
-                SearchSource::Repository => true,
-                SearchSource::Aur => self.aur_enabled(),
-                SearchSource::Flatpak => self.config.packages.flatpak_enabled,
-                SearchSource::AppImage => self.config.packages.appimage_enabled,
-            };
-            if !enabled {
+            if scope.is_some_and(|scope| scope != source) {
                 continue;
             }
-            self.search_states[search_index(source)] = ReadState::Loading;
+            let slot = search_index(source);
+            if let Some(message) = self.search_unavailable(source) {
+                if scope.is_some() {
+                    self.search_states[slot] = ReadState::Failed(message.into());
+                }
+                continue;
+            }
+            self.search_states[slot] = ReadState::Loading;
             self.reads
-                .submit(Request::Search(source, self.search_id, self.query.clone()));
+                .submit(Request::Search(source, self.search_id, term.clone()));
         }
     }
 
@@ -935,7 +971,7 @@ impl App {
                     }
                 }
 
-                let query = self.query.to_lowercase();
+                let query = self.search_terms().1.to_lowercase();
                 let mut order: Vec<_> = self
                     .search_results
                     .iter()
@@ -1034,10 +1070,7 @@ impl App {
                 .map(|size| size.to_string())
                 .unwrap_or_default(),
         };
-        self.draft = Some(Draft {
-            field: Field::Setting(setting),
-            text,
-        });
+        self.draft = Some(Draft::new(Field::Setting(setting), text));
         self.focus = Pane::List;
     }
 

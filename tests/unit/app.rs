@@ -223,6 +223,86 @@ fn search_follows_the_best_match_when_sources_finish_in_a_different_order() {
 }
 
 #[test]
+fn scoped_search_strips_the_prefix_for_ranking_and_keeps_results_on_reopen() {
+    let mut app = App {
+        view: View::Search,
+        query: "aur/ Tool".into(),
+        ..App::default()
+    };
+    let exact = search_result("tool", Source::Aur);
+    let other = search_result("other-tool", Source::Aur);
+    app.apply_read(Response::Search(
+        SearchSource::Aur,
+        0,
+        Ok(vec![other, exact.clone()]),
+    ));
+    app.open(View::Installed);
+    app.open(View::Search);
+    assert_eq!(app.selected_result(), Some(&exact));
+    assert_eq!(app.prompt(), Some(("Search packages", "aur/ Tool")));
+
+    for (input, expected) in [
+        (
+            "pacman/firefox",
+            (Some(SearchSource::Repository), "firefox"),
+        ),
+        (
+            "flatpak/org.mozilla.firefox",
+            (Some(SearchSource::Flatpak), "org.mozilla.firefox"),
+        ),
+        (
+            "https://example.org/Test.AppImage",
+            (None, "https://example.org/Test.AppImage"),
+        ),
+        ("./aur/Test.AppImage", (None, "./aur/Test.AppImage")),
+    ] {
+        app.query = input.into();
+        assert_eq!(app.search_terms(), expected);
+    }
+}
+
+#[test]
+fn scoped_search_skips_empty_terms_and_never_falls_back_from_disabled_sources() {
+    let mut app = App {
+        view: View::Search,
+        ..App::default()
+    };
+    app.config.packages.flatpak_enabled = false;
+    let now = Instant::now();
+
+    for (input, source_error) in [
+        ("pacman/  ", None),
+        (
+            "aur/vscode",
+            Some((SearchSource::Aur, "yay was not found.")),
+        ),
+        (
+            "flatpak/Foo",
+            Some((SearchSource::Flatpak, "Enable Flatpak support in Settings.")),
+        ),
+    ] {
+        press(&mut app, "/", now);
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            now,
+        );
+        press(&mut app, input, now);
+        app.handle_key(KeyCode::Enter.into(), now);
+        for source in SEARCH_SOURCES {
+            let expected = match source_error {
+                Some((unavailable, message)) if source == unavailable => {
+                    ReadState::Failed(message.into())
+                }
+                _ => ReadState::Idle,
+            };
+            assert_eq!(app.search_states[search_index(source)], expected);
+        }
+        assert!(!app.has_pending_reads());
+        assert_eq!(app.search_rows().count(), 0);
+    }
+}
+
+#[test]
 fn late_arriving_top_results_move_the_untouched_viewport_to_the_first_row() {
     let mut app = App {
         view: View::Search,

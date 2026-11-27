@@ -42,6 +42,8 @@ pub fn run(mut app: App) -> io::Result<()> {
                     // Terminals such as Kitty keep Enter in legacy form without the all-keys flag.
                     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                        // Include the keyboard layout's shifted character in encoded key events.
+                        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
                         | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
                 )
             )?;

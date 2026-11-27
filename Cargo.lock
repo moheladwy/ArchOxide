@@ -28,6 +28,7 @@ dependencies = [
  "tempfile",
  "toml",
  "tui-term",
+ "unicode-segmentation",
 ]
 
 [[package]]

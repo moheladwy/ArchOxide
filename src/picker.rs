@@ -3,7 +3,11 @@ use ratatui::{
     widgets::ListState,
 };
 
-use crate::{config::Theme, input::plain_key};
+use crate::{
+    config::Theme,
+    input::plain_key,
+    text_input::{Edit, TextInput},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -34,7 +38,7 @@ pub enum Outcome {
 #[derive(Debug)]
 pub struct Picker {
     pub kind: Kind,
-    pub query: String,
+    pub query: TextInput,
     pub editing: bool,
     pub loading: bool,
     pub error: Option<String>,
@@ -59,7 +63,7 @@ impl Picker {
         let mut picker = Self {
             kind,
             items,
-            query: String::new(),
+            query: TextInput::default(),
             editing: false,
             loading: false,
             error: None,
@@ -92,7 +96,7 @@ impl Picker {
     }
 
     fn refilter(&mut self, current: Option<&Choice>) {
-        let query = self.query.to_lowercase();
+        let query = self.query.as_str().to_lowercase();
         self.visible = self
             .items
             .iter()
@@ -110,10 +114,12 @@ impl Picker {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Outcome> {
-        if self.editing && key.code == KeyCode::Char('u') && key.modifiers == KeyModifiers::CONTROL
+        if self.editing
+            && let Some(edit) = self.query.edit(key)
         {
-            self.query.clear();
-            self.refilter(None);
+            if matches!(edit, Edit::Changed) {
+                self.refilter(None);
+            }
             return None;
         }
         let jump = key.modifiers == KeyModifiers::CONTROL
@@ -126,14 +132,6 @@ impl Picker {
             KeyCode::Esc => return Some(Outcome::Close),
             KeyCode::Enter if key.kind == KeyEventKind::Press => {
                 return self.selected().cloned().map(Outcome::Choose);
-            }
-            KeyCode::Backspace if self.editing => {
-                self.query.pop();
-                self.refilter(None);
-            }
-            KeyCode::Char(character) if self.editing && !character.is_control() => {
-                self.query.push(character);
-                self.refilter(None);
             }
             KeyCode::Char('/') => self.editing = true,
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
