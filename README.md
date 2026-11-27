@@ -99,6 +99,8 @@ The [CI workflow](.github/workflows/ci.yml) runs on pull requests and on pushes 
 
 ## Contributing
 
+See the [contribution guide](CONTRIBUTION.md) for development and PR instructions. Report vulnerabilities privately using the [security policy](SECURITY.md).
+
 Choose the [issue form](.github/ISSUE_TEMPLATE) that matches your report. New PRs start with the [general template](.github/pull_request_template.md). For a focused PR description, add `template=bug-fix.md`, `template=feature.md`, `template=chore.md`, or `template=docs.md` to your branch’s compare URL. [GitHub pull request query parameters](https://docs.github.com/en/pull-requests/reference/using-query-parameters-to-create-a-pull-request)
 
 The [MVP plan](.github/plans/2026-11-26-archoxide-mvp.md) records the source layout, completed milestones, and verification checks.
